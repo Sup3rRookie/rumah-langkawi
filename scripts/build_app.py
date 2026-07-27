@@ -1314,20 +1314,32 @@ function buildStair(g,P,ht){
      lighting, so it stays lit as the daylight scrubber runs down to dusk,
      which is the point of showing it. The wash panel fakes the spill onto the
      riser below rather than paying for 16 real lights. */
-  const ledM=new THREE.MeshBasicMaterial({color:new THREE.Color("#ffcf8f")});
-  const washM=new THREE.MeshBasicMaterial({color:new THREE.Color("#f6c98a"),
-    transparent:true,opacity:0.20});
-  steps.forEach(s=>{
+  const ledM=new THREE.MeshBasicMaterial({color:new THREE.Color("#fff4dc")});
+  /* additive so it actually brightens what is behind it rather than tinting
+     it. depthWrite off or the glow slabs occlude each other. */
+  const glowM=new THREE.MeshBasicMaterial({color:new THREE.Color("#ffb257"),
+    transparent:true,opacity:0.55,blending:THREE.AdditiveBlending,depthWrite:false});
+  steps.forEach((s,si)=>{
+    s.idx=si;
     let X0=s.x0,X1=s.x1;
     if(s.sign>0) X0-=NOSE; else X1+=NOSE;
     const wid=(s.z1-s.z0)/1000;
     box((X1-X0)/1000,TT,wid,px((X0+X1)/2),s.top-TT/2,pz((s.z0+s.z1)/2),treadM);
     const rx=(s.sign>0)?s.x0:s.x1;
     box(0.03,rise-TT,wid,px(rx),s.top-TT-(rise-TT)/2,pz((s.z0+s.z1)/2),riserM);
-    const lx=rx+(s.sign>0?-14:14);
-    box(0.022,0.014,wid*0.94,px(lx),s.top-TT-0.011,pz((s.z0+s.z1)/2),ledM);
-    box(0.008,(rise-TT)*0.8,wid*0.9,px(rx+(s.sign>0?-6:6)),
-        s.top-TT-(rise-TT)*0.45,pz((s.z0+s.z1)/2),washM);
+    /* on the EXPOSED face of the riser, clear of it. Sitting the strip 14 mm
+       off the riser centreline put it inside the 30 mm riser, so it was buried
+       in the geometry and never visible. */
+    const rxw=px(rx), dir=(s.sign>0)?-1:1, zc=pz((s.z0+s.z1)/2);
+    box(0.010,0.038,wid*0.92,rxw+dir*0.024,s.top-TT-0.032,zc,ledM);
+    box(0.004,0.13,wid*0.95,rxw+dir*0.030,s.top-TT-0.055,zc,glowM);
+    box(0.004,0.24,wid*1.00,rxw+dir*0.034,s.top-TT-0.075,zc,glowM);
+    /* a real light every third tread, so the wash falls off across the flight
+       instead of being a flat decal. Every tread would be 32 lights. */
+    if(s.idx%3===0){
+      const L=new THREE.PointLight(0xffb257,0.55,1.6);
+      L.position.set(rxw+dir*0.09,s.top-TT-0.06,zc); g.add(L);
+    }
   });
 
   /* ---- sloped members: strings and handrail ----------------------------- */
@@ -1360,23 +1372,24 @@ function buildStair(g,P,ht){
     {a:V(S.x_turn,LAND*rise+RH,   wa), b:V(S.x_turn,(LAND+1)*rise+RH, wb)},
     {a:V(S.x_turn,(LAND+1)*rise+RH,wb),b:V(S.x_low, nR*rise+RH,       wb)}
   ];
-  /* Glazed balustrade with a timber handrail, per the moodboard note and the
-     client's interior renders. The turned balusters this replaces came from
-     the photograph of the EXISTING stair, which is not what is being built. */
-  const glassM=new THREE.MeshLambertMaterial({color:new THREE.Color("#9fb4bd"),
-    transparent:true,opacity:0.24,side:THREE.DoubleSide});
-  const GT=0.019, SHOE=0.06;
-  const gh=RH-RT/2-SHOE;                 /* glass sits under the rail, off the tread */
-  const down=(v,dy)=>new THREE.Vector3(v.x,v.y+dy,v.z);
+  /* Turned balusters under a timber handrail, matching the photograph of the
+     stair. Glass was tried and the client did not want it. */
+  const balM=new THREE.MeshLambertMaterial({color:new THREE.Color("#e9e2d5")});
+  const balGeo=new THREE.CylinderGeometry(0.017,0.021,1,8), BH=RH-RT;
   runs.forEach(r=>{
-    slope(r.a,r.b,RT,RT,railM);                                   /* handrail */
-    slope(down(r.a,SHOE+gh/2-RH),down(r.b,SHOE+gh/2-RH),GT,gh,glassM);
-    slope(down(r.a,SHOE/2-RH),down(r.b,SHOE/2-RH),0.07,SHOE,railM); /* shoe rail */
+    slope(r.a,r.b,RT,RT,railM);
+    const L=Math.hypot(r.b.x-r.a.x,r.b.z-r.a.z), n=Math.max(2,Math.round(L/0.115));
+    for(let i=0;i<=n;i++){
+      const t=i/n, x=r.a.x+(r.b.x-r.a.x)*t, z=r.a.z+(r.b.z-r.a.z)*t;
+      const y0=r.a.y+(r.b.y-r.a.y)*t-RH;
+      const o=new THREE.Mesh(balGeo,balM);
+      o.position.set(x,y0+BH/2,z); o.scale.y=BH; g.add(o);
+    }
   });
-  /* slim posts at the foot, both landing corners and the head */
+  /* newel posts at the foot, both landing corners and the head */
   [[S.x_low,wa,rise],[S.x_turn,wa,LAND*rise],
    [S.x_turn,wb,(LAND+1)*rise],[S.x_low,wb,nR*rise]
-  ].forEach(p=>{const h=RH+0.06; box(0.05,h,0.05,px(p[0]),p[2]+h/2,pz(p[1]),railM);});
+  ].forEach(p=>{const h=RH+0.09; box(0.075,h,0.075,px(p[0]),p[2]+h/2,pz(p[1]),railM);});
 }
 
 /* Furniture massing in a Japandi register: pale oak carcasses, oat and linen
@@ -1543,22 +1556,26 @@ function buildFurniture(g,P){
    but level. Used on the first floor where the slab is cut for the stairwell. */
 function buildGuard(g,P){
   const railM=new THREE.MeshLambertMaterial({color:new THREE.Color("#3a2119")}),
-        glassM=new THREE.MeshLambertMaterial({color:new THREE.Color("#9fb4bd"),
-          transparent:true,opacity:0.24,side:THREE.DoubleSide});
-  const RH=0.95, RT=0.055, GT=0.019, SHOE=0.06, gh=RH-RT/2-SHOE;
+        balM=new THREE.MeshLambertMaterial({color:new THREE.Color("#e9e2d5")});
+  const balGeo=new THREE.CylinderGeometry(0.017,0.021,1,8);
+  const RH=0.95, RT=0.055, BH=RH-RT;
   P.guard.forEach(q=>{
     const ax=(q[0]-P.w/2)/1000, az=(q[1]-P.d/2)/1000,
           bx=(q[2]-P.w/2)/1000, bz=(q[3]-P.d/2)/1000;
     const L=Math.hypot(bx-ax,bz-az); if(L<0.1) return;
-    const rot=-Math.atan2(bz-az,bx-ax);
-    const at=(w,h,d,y,m)=>{const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);
-      o.position.set((ax+bx)/2,y,(az+bz)/2); o.rotation.y=rot; g.add(o);};
-    at(L,SHOE,0.07,SHOE/2,railM);                /* shoe rail */
-    at(L,gh,GT,SHOE+gh/2,glassM);                /* glass infill */
-    at(L,RT,RT,RH,railM);                        /* timber handrail */
+    const rail=new THREE.Mesh(new THREE.BoxGeometry(L,RT,RT),railM);
+    rail.position.set((ax+bx)/2,RH,(az+bz)/2);
+    rail.rotation.y=-Math.atan2(bz-az,bx-ax);
+    g.add(rail);
+    const n=Math.max(2,Math.round(L/0.115));
+    for(let i=0;i<=n;i++){
+      const t=i/n, o=new THREE.Mesh(balGeo,balM);
+      o.position.set(ax+(bx-ax)*t,BH/2,az+(bz-az)*t);
+      o.scale.y=BH; g.add(o);
+    }
     [[ax,az],[bx,bz]].forEach(p=>{
-      const o=new THREE.Mesh(new THREE.BoxGeometry(0.05,RH+0.06,0.05),railM);
-      o.position.set(p[0],(RH+0.06)/2,p[1]); g.add(o);
+      const o=new THREE.Mesh(new THREE.BoxGeometry(0.075,RH+0.09,0.075),railM);
+      o.position.set(p[0],(RH+0.09)/2,p[1]); g.add(o);
     });
   });
 }
