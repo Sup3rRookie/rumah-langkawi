@@ -114,19 +114,12 @@ def openings(walls):
     return merged, kept
 
 
-def massing(furn, tol=80.0):
-    """Group the plan's furniture linework into blocks we can extrude.
+CELL = 50.0          # footprint raster, mm per cell
 
-    The PDF gives loose red segments, not closed outlines, so pieces are
-    recovered by joining segments whose endpoints are within `tol` and taking
-    each group's bounding box. 80 mm is the working figure: at 150 mm separate
-    pieces start chaining into 30 m2 blobs, at 40 mm single pieces fragment.
 
-    Heights are a size heuristic, not data — the drawing carries no furniture
-    schedule. They give scale and occlusion for judging paint, nothing more.
-    """
-    n = len(furn)
-    parent = list(range(n))
+def _join(furn, idxs, tol):
+    """union-find over segment endpoints closer than `tol`"""
+    parent = {i: i for i in idxs}
 
     def find(a):
         while parent[a] != a:
@@ -134,16 +127,13 @@ def massing(furn, tol=80.0):
             a = parent[a]
         return a
 
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[ra] = rb
-
     grid = {}
-    for i, s in enumerate(furn):
+    for i in idxs:
+        s = furn[i]
         for p in ((s[0], s[1]), (s[2], s[3])):
             grid.setdefault((int(p[0] // tol), int(p[1] // tol)), []).append(i)
-    for i, s in enumerate(furn):
+    for i in idxs:
+        s = furn[i]
         for p in ((s[0], s[1]), (s[2], s[3])):
             gx, gy = int(p[0] // tol), int(p[1] // tol)
             for dx in (-1, 0, 1):
@@ -154,42 +144,407 @@ def massing(furn, tol=80.0):
                         t = furn[j]
                         for q in ((t[0], t[1]), (t[2], t[3])):
                             if math.dist(p, q) <= tol:
-                                union(i, j)
+                                ra, rb = find(i), find(j)
+                                if ra != rb:
+                                    parent[ra] = rb
+    g = {}
+    for i in idxs:
+        g.setdefault(find(i), []).append(i)
+    return list(g.values())
 
-    groups = {}
-    for i in range(n):
-        groups.setdefault(find(i), []).append(furn[i])
+
+def _bbox(furn, idxs):
+    gx = [v for i in idxs for v in (furn[i][0], furn[i][2])]
+    gy = [v for i in idxs for v in (furn[i][1], furn[i][3])]
+    return [min(gx), min(gy), max(gx), max(gy)]
+
+
+def _burn(furn, idxs, ox, oy, R, C):
+    """draw the linework onto an occupancy grid by walking each segment"""
+    m = [bytearray(C) for _ in range(R)]
+    for i in idxs:
+        s = furn[i]
+        n = max(1, int(math.dist((s[0], s[1]), (s[2], s[3])) / (CELL * 0.4)))
+        for t in range(n + 1):
+            u = t / n
+            cx = int((s[0] + (s[2] - s[0]) * u - ox) / CELL)
+            cy = int((s[1] + (s[3] - s[1]) * u - oy) / CELL)
+            if 0 <= cy < R and 0 <= cx < C:
+                m[cy][cx] = 1
+    return m
+
+
+def _dilate(m, R, C):
+    o = [bytearray(C) for _ in range(R)]
+    for y in range(R):
+        row = m[y]
+        for x in range(C):
+            if row[x]:
+                for yy in range(max(0, y - 1), min(R, y + 2)):
+                    orow = o[yy]
+                    for xx in range(max(0, x - 1), min(C, x + 2)):
+                        orow[xx] = 1
+    return o
+
+
+def _erode(m, R, C):
+    o = [bytearray(C) for _ in range(R)]
+    for y in range(1, R - 1):
+        a, b, c = m[y - 1], m[y], m[y + 1]
+        for x in range(1, C - 1):
+            if (b[x] and b[x - 1] and b[x + 1] and a[x] and c[x]
+                    and a[x - 1] and a[x + 1] and c[x - 1] and c[x + 1]):
+                o[y][x] = 1
+    return o
+
+
+def _enclosed(m, R, C):
+    """flood in from the padded border; whatever it cannot reach is inside the
+    outline, which is how an open drawing becomes a solid footprint"""
+    from collections import deque
+    seen = [bytearray(C) for _ in range(R)]
+    q = deque()
+    for y in range(R):
+        for x in (0, C - 1):
+            if not m[y][x] and not seen[y][x]:
+                seen[y][x] = 1
+                q.append((y, x))
+    for x in range(C):
+        for y in (0, R - 1):
+            if not m[y][x] and not seen[y][x]:
+                seen[y][x] = 1
+                q.append((y, x))
+    while q:
+        y, x = q.popleft()
+        for yy, xx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
+            if 0 <= yy < R and 0 <= xx < C and not seen[yy][xx] and not m[yy][xx]:
+                seen[yy][xx] = 1
+                q.append((yy, xx))
+    return [bytearray(0 if seen[y][x] else 1 for x in range(C)) for y in range(R)]
+
+
+def _split(fill, R, C, minc=24):
+    """Break a footprint at thin necks.
+
+    Two pieces that only touch — a wardrobe meeting the corner of a bed, a chair
+    pushed against a table — join at a neck a few cells wide. Eroding kills the
+    neck but leaves each piece's core, so the cores label out separately and can
+    then be grown back over the full footprint. Returns a label grid, or None
+    when there is only one piece to find.
+    """
+    from collections import deque
+    core = _erode(fill, R, C)
+    lab = [[0] * C for _ in range(R)]
+    sizes = []
+    for y in range(R):
+        for x in range(C):
+            if core[y][x] and not lab[y][x]:
+                n = len(sizes) + 1
+                cnt = 0
+                q = deque([(y, x)])
+                lab[y][x] = n
+                while q:
+                    cy, cx = q.popleft()
+                    cnt += 1
+                    for yy, xx in ((cy + 1, cx), (cy - 1, cx), (cy, cx + 1), (cy, cx - 1)):
+                        if 0 <= yy < R and 0 <= xx < C and core[yy][xx] and not lab[yy][xx]:
+                            lab[yy][xx] = n
+                            q.append((yy, xx))
+                sizes.append(cnt)
+    keep = [i + 1 for i, s in enumerate(sizes) if s >= minc]
+    if len(keep) < 2:
+        return None
+    remap = {v: i + 1 for i, v in enumerate(keep)}
+    q = deque()
+    for y in range(R):
+        for x in range(C):
+            lab[y][x] = remap.get(lab[y][x], 0)
+            if lab[y][x]:
+                q.append((y, x))
+    while q:
+        y, x = q.popleft()
+        for yy, xx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
+            if 0 <= yy < R and 0 <= xx < C and fill[yy][xx] and not lab[yy][xx]:
+                lab[yy][xx] = lab[y][x]
+                q.append((yy, xx))
+    return lab, len(keep)
+
+
+def _maxrect(m, R, C):
+    """largest all-filled axis-aligned rectangle, by the histogram stack method"""
+    h = [0] * C
+    best = (0, 0, 0, 0, 0)
+    for y in range(R):
+        row = m[y]
+        for x in range(C):
+            h[x] = h[x] + 1 if row[x] else 0
+        st = []
+        for x in range(C + 1):
+            cur = h[x] if x < C else 0
+            start = x
+            while st and st[-1][1] >= cur:
+                sx, sh = st.pop()
+                a = sh * (x - sx)
+                if a > best[0]:
+                    best = (a, y - sh + 1, sx, y, x - 1)
+                start = sx
+            st.append((start, cur))
+    return best
+
+
+def _cover(m, R, C, maxr=6):
+    """Greedy rectangle cover of the footprint.
+
+    Rectangles rather than a polygon because three.js extrudes a BoxGeometry for
+    free, and because a handful of merged rectangles is a fraction of the payload
+    of per-cell data. An L comes out in two, a plain carcass in one.
+    """
+    m = [bytearray(r) for r in m]
+    tot = sum(sum(r) for r in m)
+    if not tot:
+        return []
+    got, out = 0, []
+    while got < tot * 0.93 and len(out) < maxr:
+        a, r0, c0, r1, c1 = _maxrect(m, R, C)
+        if a <= 0:
+            break
+        for y in range(r0, r1 + 1):
+            row = m[y]
+            for x in range(c0, c1 + 1):
+                if row[x]:
+                    row[x] = 0
+                    got += 1
+        out.append((r0, c0, r1, c1))
+    return out
+
+
+def massing(furn, n_line, keepout=None, tol=30.0):
+    """Group the plan's furniture linework into pieces and give each its footprint.
+
+    The PDF gives loose red segments, not closed outlines. An earlier pass joined
+    them at 80 mm and took each group's bounding box, which cannot say L: the
+    kitchen return read as one 11 m2 slab, and a chair touching a table outline
+    dragged the whole dining set into a single block.
+
+    So: join tight (30 mm) so each drawn stroke stays its own thing, then merge
+    strokes whose boxes sit inside one another — outline, hatching and cushion
+    lines all overlap the piece they belong to, whereas a chair beside a table
+    does not. What that still cannot separate is two pieces drawn corner to
+    corner, so the footprint raster is split at thin necks afterwards.
+
+    Segments from index `n_line` on come from PDF rects, four to a piece. Those
+    are already complete closed outlines, so they seed their own groups and are
+    never chained: a wardrobe drawn butted against a bed shares an edge, and no
+    endpoint rule can tell that apart from one piece.
+
+    Heights are a size heuristic, not data — the drawing carries no furniture
+    schedule. They give scale and occlusion for judging paint, nothing more.
+    """
+    groups = _join(furn, list(range(n_line)), tol)
+    groups += [list(range(i, i + 4)) for i in range(n_line, len(furn), 4)]
+    boxes = [_bbox(furn, g) for g in groups]
+
+    def ov(a, b):
+        return (max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+                * max(0.0, min(a[3], b[3]) - max(a[1], b[1])))
+
+    def ar(a):
+        return max(1.0, (a[2] - a[0]) * (a[3] - a[1]))
+
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(groups)):
+            for j in range(len(groups) - 1, i, -1):
+                if ov(boxes[i], boxes[j]) > 0.45 * min(ar(boxes[i]), ar(boxes[j])):
+                    groups[i] += groups.pop(j)
+                    boxes.pop(j)
+                    boxes[i] = _bbox(furn, groups[i])
+                    merged = True
+            if merged:
+                break
+
+    def module_run(a, b):
+        """Are these two blocks of one modular piece butted together?
+
+        A sectional sofa is drawn as separate ~1 m cushion blocks and nothing
+        about one block says sofa. Blocks of the same size sitting flush against
+        each other are one piece. A chair pushed against a dining table also
+        touches, so similar area and flush edges do the separating: 0.2 m2
+        against 2.4 m2 is furniture beside furniture, not a run.
+        """
+        aa, ab = ar(a), ar(b)
+        if not (0.6e6 <= aa <= 2.5e6 and 0.6e6 <= ab <= 2.5e6):
+            return False
+        if max(aa, ab) / min(aa, ab) > 1.6:
+            return False
+        if (max(a[0] - b[2], b[0] - a[2]) <= 60
+                and abs(a[1] - b[1]) <= 120 and abs(a[3] - b[3]) <= 120):
+            return True
+        return (max(a[1] - b[3], b[1] - a[3]) <= 60
+                and abs(a[0] - b[0]) <= 120 and abs(a[2] - b[2]) <= 120)
+
+    # Union-find on the original boxes, not one merge at a time: a three-block
+    # run has to stay a run, and by the third block a growing box no longer
+    # looks the same size as the module it is trying to pick up.
+    par = list(range(len(groups)))
+
+    def root(a):
+        while par[a] != a:
+            par[a] = par[par[a]]
+            a = par[a]
+        return a
+
+    for i in range(len(groups)):
+        for j in range(i + 1, len(groups)):
+            if module_run(boxes[i], boxes[j]):
+                ra, rb = root(i), root(j)
+                if ra != rb:
+                    par[ra] = rb
+    runs = {}
+    for i in range(len(groups)):
+        runs.setdefault(root(i), []).extend(groups[i])
+    groups = list(runs.values())
+    import os
+    if os.environ.get('MASSDEBUG'):
+        z = [float(v) for v in os.environ['MASSDEBUG'].split(',')]
+        for g in groups:
+            b = _bbox(furn, g)
+            if z[0] <= b[0] and b[2] <= z[2] and z[1] <= b[1] and b[3] <= z[3]:
+                print('   GROUP %6.0f %6.0f %6.0f %6.0f  %5.0fx%-5.0f segs=%d'
+                      % (b[0], b[1], b[2], b[3], b[2] - b[0], b[3] - b[1], len(g)))
+                if len(g) < 20:
+                    for i in g:
+                        print('       seg %6.0f %6.0f %6.0f %6.0f' % tuple(furn[i]))
+
+    pieces = []
+    for g in groups:
+        b = _bbox(furn, g)
+        # detail lines, hatching, noise. The min-side test drops leader lines and
+        # dimension ticks, which pass on area alone and then extrude as fins.
+        if ((b[2] - b[0]) * (b[3] - b[1]) < 0.15e6
+                or min(b[2] - b[0], b[3] - b[1]) < 250):
+            continue
+        # the stair is outlined in red like furniture; it is already modelled
+        if keepout and ov(b, keepout) > 0.6 * ar(b):
+            continue
+        pad = 2
+        C = int((b[2] - b[0]) / CELL) + 1 + 2 * pad
+        R = int((b[3] - b[1]) / CELL) + 1 + 2 * pad
+        ox, oy = b[0] - pad * CELL, b[1] - pad * CELL
+        fill = _erode(_enclosed(_dilate(_burn(furn, g, ox, oy, R, C), R, C), R, C), R, C)
+        n_fill = sum(sum(r) for r in fill)
+        solid = n_fill * CELL * CELL / ar(b)
+        # planters and hatch bursts are open linework with nothing enclosed, so
+        # there is no footprint to read; a chair's doubled outline does enclose
+        # one but tracing it only buys a 50 mm step. Both want the box.
+        if solid < 0.30 or ar(b) < 0.8e6:
+            pieces.append((b, [list(b)], len(g)))
+            continue
+        parts = _split(fill, R, C)
+        masks = []
+        if parts:
+            lab, nlab = parts
+            for v in range(1, nlab + 1):
+                masks.append([bytearray(1 if lab[y][x] == v else 0 for x in range(C))
+                              for y in range(R)])
+        else:
+            masks = [fill]
+        for mk in masks:
+            rects = []
+            for r0, c0, r1, c1 in _cover(mk, R, C):
+                r = [ox + c0 * CELL, oy + r0 * CELL,
+                     ox + (c1 + 1) * CELL, oy + (r1 + 1) * CELL]
+                # a rectangle narrower than any real carcass is the offset
+                # between a doubled outline, not a leg of the shape
+                if min(r[2] - r[0], r[3] - r[1]) >= 150:
+                    rects.append(r)
+            if not rects:
+                rects = [list(b)]
+            pb = [min(r[0] for r in rects), min(r[1] for r in rects),
+                  max(r[2] for r in rects), max(r[3] for r in rects)]
+            if ((pb[2] - pb[0]) * (pb[3] - pb[1]) < 0.15e6
+                    or min(pb[2] - pb[0], pb[3] - pb[1]) < 250):
+                continue
+            if ar(pb) < 0.8e6:
+                rects = [list(pb)]
+            n_seg = len(g) if len(masks) == 1 else sum(
+                1 for i in g
+                if mk[min(R - 1, max(0, int(((furn[i][1] + furn[i][3]) / 2 - oy) / CELL)))]
+                     [min(C - 1, max(0, int(((furn[i][0] + furn[i][2]) / 2 - ox) / CELL)))])
+            pieces.append((pb, rects, n_seg))
 
     out = []
-    for c in groups.values():
-        gx = [v for s in c for v in (s[0], s[2])]
-        gy = [v for s in c for v in (s[1], s[3])]
-        bx0, bx1, by0, by1 = min(gx), max(gx), min(gy), max(gy)
-        area = (bx1 - bx0) * (by1 - by0) / 1e6
-        if area < 0.15:                 # detail lines, hatching, noise
-            continue
-        w, d = bx1 - bx0, by1 - by0
+    for b, rects, n_seg in pieces:
+        w, d = b[2] - b[0], b[3] - b[1]
+        # measure the piece by what is actually emitted: the rectangles cover the
+        # footprint and never overlap, so their sum is the real plan area and
+        # their share of the box is how far off rectangular the piece is
+        area = sum((r[2] - r[0]) * (r[3] - r[1]) for r in rects) / 1e6
+        solid = area * 1e6 / ar(b)
         ratio = max(w, d) / max(1.0, min(w, d))
         # Planters and round tables are drawn as many short segments around a
         # small near-square outline; real carcasses are a handful of long ones.
-        dense = len(c) / max(1.0, area)
+        dense = n_seg / max(1.0, area)
+        # deepest rectangle in the piece: cabinetry runs stay shallow whatever
+        # their length, seating and beds do not
+        short = max(min(r[2] - r[0], r[3] - r[1]) for r in rects)
 
-        if area >= 6.0:
+        if area >= 5.0 and solid > 0.82:
             tier = 'rug'
         elif area <= 0.75 and ratio < 1.5 and dense > 28:
             tier = 'plant'
         elif area <= 0.55 and ratio < 1.45 and dense > 14:
             tier = 'round'
-        elif area >= 2.2 and ratio >= 1.7:
+        elif area >= 0.80 and short <= 800:
+            tier = 'counter'
+        elif area >= 2.0 and solid < 0.78:
+            tier = 'sofa'                        # an L or a U is seating
+        elif area >= 2.0 and min(w, d) >= 1100:
+            tier = 'bed'                         # nothing you sit on is that deep
+        elif area >= 2.0:
             tier = 'sofa'
-        elif area >= 2.2:
-            tier = 'bed'
         elif area >= 0.75:
             tier = 'table'
         else:
             tier = 'chair'
-        out.append([bx0, by0, bx1, by1, tier])
-    return out
+        out.append([b[0], b[1], b[2], b[3], rects, tier, area])
+
+    # A dining table and a sofa are the same box at this scale; what tells them
+    # apart is the ring of chairs. Four or more is a setting, two is a bedside.
+    seats = [p for p in out if p[6] <= 0.42]
+    for p in out:
+        if p[5] not in ('sofa', 'bed'):
+            continue
+        near = 0
+        for q in seats:
+            cx, cz = (q[0] + q[2]) / 2, (q[1] + q[3]) / 2
+            if p[0] <= cx <= p[2] and p[1] <= cz <= p[3]:
+                continue
+            if p[0] - 900 <= cx <= p[2] + 900 and p[1] - 900 <= cz <= p[3] + 900:
+                near += 1
+        if near >= 4:
+            p[5] = 'table'
+
+    # A coffee table is a low slab parked in front of seating. Its own size says
+    # nothing — at 0.7 x 1.2 m it reads as cabinetry — but its position does:
+    # nothing else of that size sits against a sofa. Holding it to oblong is what
+    # keeps the armchair beside the same sofa out, that being near-square.
+    sofas = [p for p in out if p[5] == 'sofa']
+    for p in out:
+        if p[5] not in ('table', 'counter', 'chair', 'round'):
+            continue
+        if not 0.30 <= p[6] <= 1.6:
+            continue
+        w, d = p[2] - p[0], p[3] - p[1]
+        if max(w, d) / max(1.0, min(w, d)) < 1.4:
+            continue
+        for s in sofas:
+            if (s[0] - 1200 <= p[2] and p[0] <= s[2] + 1200
+                    and s[1] - 1200 <= p[3] and p[1] <= s[3] + 1200):
+                p[5] = 'coffee'
+                break
+    return [p[:6] for p in out]
 
 
 data = {}
@@ -201,6 +556,7 @@ for key, (lo, hi, known_w) in PLANS.items():
     wl = [l for l in lines if l.get('stroking_color') in (GRAY, 0, (0.0, 0.0, 0.0)) and inb(l)]
     rl = [l for l in lines if l.get('stroking_color') == RED and inb(l)]
     rc = [c for c in curves if c.get('stroking_color') == RED and inb(c)]
+    rr = [r for r in page.rects if r.get('stroking_color') == RED and inb(r)]
 
     xs = [v for l in wl for v in (l['x0'], l['x1'])]
     ys = [v for l in wl for v in (l['top'], l['bottom'])]
@@ -250,6 +606,16 @@ for key, (lo, hi, known_w) in PLANS.items():
         for i in range(len(p) - 1):
             if math.dist(p[i], p[i + 1]) > 60:
                 furn.append([p[i][0], p[i][1], p[i + 1][0], p[i + 1][1]])
+    # Whole pieces are drawn as PDF rects, not lines: the dining table, the
+    # wardrobe runs, most bed carcasses. Read as lines only, they were missing
+    # from the model entirely, which is why the dining set was chairs and air.
+    n_line = len(furn)
+    for r in rr:
+        a, b = P(r['x0'], r['top']), P(r['x1'], r['bottom'])
+        if abs(b[0] - a[0]) < 60 or abs(b[1] - a[1]) < 60:
+            continue
+        furn += [[a[0], a[1], b[0], a[1]], [b[0], a[1], b[0], b[1]],
+                 [b[0], b[1], a[0], b[1]], [a[0], b[1], a[0], a[1]]]
 
     from collections import defaultdict
     runs = defaultdict(list)
@@ -290,7 +656,7 @@ for key, (lo, hi, known_w) in PLANS.items():
         STAIRBOX[key] = (bx0, by0, bx1, by1)
     print('   %s: removed %d tread lines, %d stairwell partitions' % (key, n_t, n_i))
 
-    stair = well = guard = stair_below = None
+    stair = well = guard = stair_below = parapet = parapet_cut = None
     SL = None
     if key == 'gf':
         # Half-turn stair with a straight half-space landing, set out from the
@@ -332,6 +698,20 @@ for key, (lo, hi, known_w) in PLANS.items():
         stair_below = dict(x_low=5310, x_turn=7340, x_east=8310,
                            fa=[6520, 7355], fb=[8515, 9545],
                            treads_a=7, treads_b=7, risers=16)
+
+        # Balcony: the space with the planters, up to the door. Its west and
+        # south edges are the building perimeter and want a waist-high parapet
+        # rather than a wall.
+        #
+        # Both edges are full wall BANDS, not single lines: west 745/895 and
+        # south 17375/17530. Dropping only the inner face leaves the outer one
+        # standing full height, which reads as two walls stacked. Both faces
+        # have to go. They also run past the balcony (x=745 carries on north to
+        # z 9695, z=17530 carries on east to x 6015), so the balcony stretch is
+        # clipped out and the rest of each run stays a wall.
+        parapet = [[820, 13270, 820, 17452], [820, 17452, 4710, 17452]]
+        parapet_cut = [('v', 745, 13270, 17530), ('v', 895, 13270, 17375),
+                       ('h', 17530, 745, 4710), ('h', 17375, 895, 4710)]
         # x=5310 runs on to z 9695 where it meets the south wall, so the range
         # has to reach past the well or the whole line survives and stands as a
         # 3 m wall right at the stair. x=5380 is a second line down the well.
@@ -361,6 +741,41 @@ for key, (lo, hi, known_w) in PLANS.items():
         n_before = len(walls)
         walls = [w for w in walls if not stairline(w)]
         print('   %s: removed %d stair setting-out lines' % (key, n_before - len(walls)))
+
+    if parapet_cut:
+        def clip(ws, cuts):
+            out, n = [], 0
+            for w in ws:
+                horiz, vert = abs(w[1] - w[3]) < 1, abs(w[0] - w[2]) < 1
+                if not (horiz or vert):
+                    out.append(w)
+                    continue
+                c = w[1] if horiz else w[0]
+                lo_ = min(w[0], w[2]) if horiz else min(w[1], w[3])
+                hi_ = max(w[0], w[2]) if horiz else max(w[1], w[3])
+                spans = [(lo_, hi_)]
+                for kind, cc, a, b in cuts:
+                    if (kind == 'h') != horiz or abs(cc - c) > 4:
+                        continue
+                    nxt = []
+                    for p, q in spans:
+                        if b <= p or a >= q:
+                            nxt.append((p, q))
+                            continue
+                        n += 1
+                        if p < a - 1:
+                            nxt.append((p, a))
+                        if b + 1 < q:
+                            nxt.append((b, q))
+                    spans = nxt
+                for p, q in spans:
+                    if q - p < 60:
+                        continue
+                    out.append([p, c, q, c] if horiz else [c, p, c, q])
+            return out, n
+
+        walls, n_cut = clip(walls, parapet_cut)
+        print('   %s: opened %d wall runs along the balcony edges' % (key, n_cut))
     n_pre = len(walls)
     wins, walls = openings(walls)
     print('   %s: %d window openings, %d glazing lines pulled out of the walls'
@@ -369,7 +784,14 @@ for key, (lo, hi, known_w) in PLANS.items():
         print('      %s wall at %-7.0f  %6.0f..%-6.0f  width %5.0f  thk %3.0f'
               % (q['o'], q['c'], q['a'], q['b'], q['b'] - q['a'], q['t']))
 
-    furn3d = massing(furn)
+    # The stair is outlined in red, same as furniture, and reads as a 9 m2 U.
+    # It is already modelled properly, so keep massing out of its footprint.
+    keepout = None
+    if stair:
+        keepout = [stair['x_low'], stair['fa'][0], stair['x_east'], stair['fb'][1]]
+    elif well:
+        keepout = well
+    furn3d = massing(furn, n_line, keepout)
     w_mm, d_mm = round((max(xs) - x0) * scale), round((max(ys) - y0) * scale)
 
     # Each plan is centred on its own width, but the FF plan is 820 mm west of
@@ -385,9 +807,12 @@ for key, (lo, hi, known_w) in PLANS.items():
     data[key] = dict(w=w_mm, d=d_mm,
                      walls=walls, furn=furn, furn3d=furn3d, stair=stair,
                      well=well, guard=guard, align=align,
-                     stair_below=stair_below, wins=wins)
+                     stair_below=stair_below, wins=wins, parapet=parapet)
+    from collections import Counter
     print(key, data[key]['w'], 'x', data[key]['d'], 'walls', len(walls),
-          'furn', len(furn), '->', len(furn3d), 'massing blocks')
+          'furn', len(furn), '->', len(furn3d), 'pieces,',
+          sum(len(f[4]) for f in furn3d), 'footprint rects')
+    print('   %s: %s' % (key, dict(Counter(f[5] for f in furn3d))))
 
 blob = json.dumps(data, separators=(',', ':'))
 print('embedded payload', round(len(blob) / 1024), 'KB')
@@ -635,16 +1060,31 @@ function buildFurniture(g,P){
   const cyl=(r,h,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.CylinderGeometry(r,r*0.82,h,14),m);
     o.position.set(x,y,z); g.add(o);};
   P.furn3d.forEach((b,i)=>{
-    const cx=((b[0]+b[2])/2-P.w/2)/1000, cz=((b[1]+b[3])/2-P.d/2)/1000;
-    const w=(b[2]-b[0])/1000, d=(b[3]-b[1])/1000, tier=b[4];
+    const tier=b[5];
+    /* b[4] is the piece's real footprint, merged rectangles rather than one box,
+       so an L stays an L. Carcass parts repeat per rectangle; the accents that
+       only make sense once (a sofa back, a pillow) go on the largest. */
+    const R=b[4].map(r=>({cx:((r[0]+r[2])/2-P.w/2)/1000, cz:((r[1]+r[3])/2-P.d/2)/1000,
+                          w:(r[2]-r[0])/1000, d:(r[3]-r[1])/1000}));
+    if(!R.length) return;
+    let m0=R[0]; R.forEach(r=>{if(r.w*r.d>m0.w*m0.d) m0=r;});
+    const cx=m0.cx, cz=m0.cz, w=m0.w, d=m0.d;
     const along=(w>=d)?"x":"z";                    /* long axis of the piece */
-    const LW=(along==="x")?w:0.09, LD=(along==="x")?0.09:d;
     if(tier==="rug"){
-      box(sh(w,0.06),0.012,sh(d,0.06),cx,0.012,cz,M.oat);
+      R.forEach(r=>box(sh(r.w,0.06),0.012,sh(r.d,0.06),r.cx,0.012,r.cz,M.oat));
+
+    }else if(tier==="counter"){     /* cabinetry run: toe recess, carcass, top */
+      R.forEach(r=>{
+        box(sh(r.w,0.10),0.10,sh(r.d,0.10),r.cx,0.05,r.cz,M.char);
+        box(r.w,0.72,r.d,r.cx,0.46,r.cz,M.oak);
+        box(r.w,0.04,r.d,r.cx,0.84,r.cz,M.oat);
+      });
 
     }else if(tier==="sofa"){        /* seat on a recessed oak plinth, back, arms */
-      box(sh(w,0.10),0.06,sh(d,0.10),cx,0.09,cz,M.oakDark);
-      box(w,0.22,d,cx,0.27,cz,M.linen);
+      R.forEach(r=>{
+        box(sh(r.w,0.10),0.06,sh(r.d,0.10),r.cx,0.09,r.cz,M.oakDark);
+        box(r.w,0.22,r.d,r.cx,0.27,r.cz,M.linen);
+      });
       const bx=(along==="x")?cx:cx-(w/2-0.09), bz=(along==="x")?cz-(d/2-0.09):cz;
       box((along==="x")?w:0.18,0.42,(along==="x")?0.18:d,bx,0.44,bz,M.linen);
       const s=(along==="x")?1:0;
@@ -652,14 +1092,23 @@ function buildFurniture(g,P){
       box(s?0.14:w,0.14,s?d:0.14,cx+(s?w/2-0.07:0),0.45,cz+(s?0:d/2-0.07),M.linen);
 
     }else if(tier==="bed"){                        /* low platform, quilt, pillow */
-      box(w,0.14,d,cx,0.07,cz,M.oak);
+      R.forEach(r=>box(r.w,0.14,r.d,r.cx,0.07,r.cz,M.oak));
       box(sh(w,0.10),0.20,sh(d,0.10),cx,0.24,cz,M.linen);
       box(sh(w,0.30),0.10,0.34,cx,0.39,cz-(d/2-0.28),M.oat);
 
+    }else if(tier==="coffee"){  /* low slab on a recessed plinth: at 400 mm a
+                                   dining top on four legs reads as a cuboid */
+      R.forEach(r=>{
+        box(sh(r.w,0.44),0.34,sh(r.d,0.44),r.cx,0.17,r.cz,M.oakDark);
+        box(r.w,0.065,r.d,r.cx,0.4025,r.cz,M.oak);
+      });
+
     }else if(tier==="table"){                      /* thin top, four slim legs */
-      box(w,0.04,d,cx,0.73,cz,M.oak);
-      [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(q=>
-        box(0.055,0.71,0.055,cx+q[0]*(w/2-0.07),0.355,cz+q[1]*(d/2-0.07),M.oakDark));
+      R.forEach(r=>{
+        box(r.w,0.04,r.d,r.cx,0.73,r.cz,M.oak);
+        [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(q=>
+          box(0.055,0.71,0.055,r.cx+q[0]*(r.w/2-0.07),0.355,r.cz+q[1]*(r.d/2-0.07),M.oakDark));
+      });
 
     }else if(tier==="round"){                      /* pedestal side table */
       cyl(Math.min(w,d)/2,0.035,cx,0.44,cz,M.oak);
@@ -837,6 +1286,21 @@ function build(){
       buildStair(sg,{w:P.w,d:P.d,stair:P.stair_below},H.gf);
     }
     if(P.guard) buildGuard(g,P);
+    /* balcony parapet: waist height with a timber coping, not a wall */
+    if(P.parapet){
+      const PH=1.00, PT=0.11;
+      const wallM=new THREE.MeshLambertMaterial({color:new THREE.Color("#efe9df")}),
+            copeM=new THREE.MeshLambertMaterial({color:new THREE.Color("#cbb08a")});
+      P.parapet.forEach(p=>{
+        const ax=(p[0]-P.w/2)/1000, az=(p[1]-P.d/2)/1000,
+              bx=(p[2]-P.w/2)/1000, bz=(p[3]-P.d/2)/1000;
+        const len=Math.hypot(bx-ax,bz-az), rot=-Math.atan2(bz-az,bx-ax);
+        const m=new THREE.Mesh(new THREE.BoxGeometry(len,PH,PT),wallM);
+        m.position.set((ax+bx)/2,PH/2,(az+bz)/2); m.rotation.y=rot; g.add(m);
+        const c=new THREE.Mesh(new THREE.BoxGeometry(len,0.05,PT+0.05),copeM);
+        c.position.set((ax+bx)/2,PH+0.025,(az+bz)/2); c.rotation.y=rot; g.add(c);
+      });
+    }
     root.add(g);
   });
   applyFloors();

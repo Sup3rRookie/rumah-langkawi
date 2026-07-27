@@ -5,3 +5,9 @@ __pycache__/
 # Source drawings — title blocks carry client and consultant names.
 # Keep these locally; never commit them to the public repo.
 data/*.pdf
+
+# Reference imagery from the design proposal: the consultant's work, and
+# ~16 MB per render. Keep locally, do not publish.
+*.HEIC
+*.heic
+Scene*.png
