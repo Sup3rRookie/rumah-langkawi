@@ -1316,15 +1316,17 @@ function buildStair(g,P,ht){
      lighting, so it stays lit as the daylight scrubber runs down to dusk,
      which is the point of showing it. The wash panel fakes the spill onto the
      riser below rather than paying for 16 real lights. */
-  const ledM=new THREE.MeshBasicMaterial({color:new THREE.Color("#fff6e2")});
-  /* Bloom shells hugging the strip: concentric, each larger and fainter.
-     Additive so they read as light, depthWrite off or they occlude each other.
-     Kept tight on purpose. Big slabs running down the riser washed it white,
-     which is what made the stair look repainted. */
-  const glowM=[0.60,0.42,0.26,0.14].map(o=>new THREE.MeshBasicMaterial({
-    color:new THREE.Color("#ffa63e"),transparent:true,opacity:o,
+  /* Amber, not near-white. A white strip on every tread is what was reading as
+     "too bright white" against the wall-coloured riser. */
+  const ledM=new THREE.MeshBasicMaterial({color:new THREE.Color("#ffb14a")});
+  /* Bloom shells, concentric, each larger and fainter. Additive layers SUM, so
+     stacking high opacities in one place clips to white however warm the
+     colour is. More glow comes from spreading them wider at LOWER opacity, not
+     from piling them up. depthWrite off or they occlude each other. */
+  const glowM=[0.34,0.24,0.15,0.09,0.05].map(o=>new THREE.MeshBasicMaterial({
+    color:new THREE.Color("#ff8f22"),transparent:true,opacity:o,
     blending:THREE.AdditiveBlending,depthWrite:false}));
-  const HALO=[[0.05,1.04],[0.085,1.08],[0.135,1.12],[0.20,1.16]];
+  const HALO=[[0.09,1.05],[0.18,1.10],[0.32,1.16],[0.50,1.24],[0.74,1.34]];
   steps.forEach((s,si)=>{
     s.idx=si;
     let X0=s.x0,X1=s.x1;
