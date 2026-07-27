@@ -1007,13 +1007,24 @@ for key, (lo, hi, known_w) in PLANS.items():
     for q in wins:
         span = q['b'] - q['a']
         for ax, az, aw, ah in arcs:
-            reach = aw if q['o'] == 'v' else ah
-            if abs(reach - span) > max(reach, span) * 0.30:
+            # The arc is a quarter circle hinged at one jamb, so it reaches out
+            # across the room and usually overruns the opening. Test overlap,
+            # not an edge match: requiring the arc to start at the jamb misses
+            # every door whose swing is drawn from the far leaf.
+            if q['o'] == 'v':
+                a0, a1, across = az, az + ah, abs(ax - q['c'])
+                reach = aw
+            else:
+                a0, a1, across = ax, ax + aw, abs(az - q['c'])
+                reach = ah
+            overlap = min(a1, q['b']) - max(a0, q['a'])
+            if overlap < 0.35 * min(a1 - a0, span):
                 continue
-            near_start = min(abs((az if q['o'] == 'v' else ax) - q['a']),
-                             abs((az + ah if q['o'] == 'v' else ax + aw) - q['b']))
-            across = abs((ax if q['o'] == 'v' else az) - q['c'])
-            if near_start < 150 and across < 1400:
+            if abs(reach - span) > max(reach, span) * 0.45:
+                continue
+            # floor of 1400: the arc is drawn from the leaf, which for a narrow
+            # door sits further from the wall centreline than its own radius
+            if across < max(1400.0, 1.6 * max(reach, span)):
                 q['door'] = True
                 n_door += 1
                 break
@@ -1046,6 +1057,17 @@ for key, (lo, hi, known_w) in PLANS.items():
 
     if key == 'ff':
         furn3d = client_rooms_ff(furn3d)
+
+    if key == 'gf':
+        # Client instruction: the island is not wanted in the model. It IS in
+        # the drawing at 1140,14900 -> 3040,15600 (1900 x 700) and comes through
+        # correctly; it is being suppressed on request, not lost.
+        n_before = len(furn3d)
+        furn3d = [b for b in furn3d
+                  if not (abs(b[0] - 1140) < 60 and abs(b[1] - 14900) < 60
+                          and abs(b[2] - 3040) < 60 and abs(b[3] - 15600) < 60)]
+        if n_before != len(furn3d):
+            print('   gf: kitchen island suppressed at the client request')
 
     # Client instruction about one room, not an extraction problem, so it reads
     # as one. The balcony is to be furnished with the sofa alone: the armchairs
