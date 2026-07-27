@@ -46,6 +46,27 @@ def client_rooms_ff(pieces):
     return out
 
 
+def client_rooms_gf(pieces):
+    """Kitchen corrections from the client's interior renders.
+
+    The extraction reads the kitchen as one L-shaped run at a single height.
+    The renders show it is two things: a floor-to-ceiling bank of oak units up
+    the east wall (fridge, oven, tall storage) and a worktop along the south
+    wall carrying the sink and hob. Splitting it is what makes the room read.
+    """
+    out = []
+    for b in pieces:
+        if (abs(b[0] - 4640) < 60 and abs(b[1] - 13290) < 60
+                and abs(b[2] - 7540) < 60 and abs(b[3] - 17440) < 60):
+            for r in b[4]:
+                tall = (r[2] - r[0]) < (r[3] - r[1])      # the east leg
+                out.append([r[0], r[1], r[2], r[3], [list(r)],
+                            'cupboard' if tall else 'counter'])
+        else:
+            out.append(b)
+    return out
+
+
 def openings(walls):
     """Recover window openings, and strip the lines that mark them.
 
@@ -1040,6 +1061,16 @@ for key, (lo, hi, known_w) in PLANS.items():
                 break
     print('   %s: %d of those are doors (matched to a swing arc)' % (key, n_door))
 
+    if key == 'gf':
+        # Screen between the wet and dry kitchen. It is a 150 mm framed band at
+        # x 4490/4640 with panel lines at 4510 and 4620, and the drawing leaves
+        # a 1255 mm gap in it. Client wants a sliding leaf there, not a swing,
+        # so it is flagged rather than left to the arc matcher, which would
+        # never find it: a slider has no swing arc to match against.
+        wins.append({'o': 'v', 'c': 4565.0, 'a': 14715.0, 'b': 15970.0,
+                     't': 150.0, 'door': True, 'slide': True})
+        print('   gf: sliding door in the wet/dry screen, x 4565, z 14715..15970')
+
     if key == 'ff':
         # Client asked for a door here. The drawing does not show one, so this
         # is added, not extracted. It goes in the 155 mm band at x 5310/5465
@@ -1080,6 +1111,9 @@ for key, (lo, hi, known_w) in PLANS.items():
 
     if key == 'ff':
         furn3d = client_rooms_ff(furn3d)
+
+    if key == 'gf':
+        furn3d = client_rooms_gf(furn3d)
 
     if key == 'gf':
         # Client instruction: the island is not wanted in the model. It IS in
@@ -1653,7 +1687,7 @@ function build(){
           if((q.o==="h")!==horiz) return;
           if(Math.abs(q.c-c)>q.t/2+30) return;
           const a=Math.max(q.a,s0), b=Math.min(q.b,s1);
-          if(b-a>200) cuts.push([a,b,q.b-q.a,!!q.door]);
+          if(b-a>200) cuts.push([a,b,q.b-q.a,!!q.door,!!q.slide]);
         });
         cuts.sort((p,q)=>p[0]-q[0]);
       }
@@ -1694,6 +1728,16 @@ function build(){
           piece(cut[0],cut[0]+45,0,dh,frameM,false);
           piece(cut[1]-45,cut[1],0,dh,frameM,false);
           piece(cut[0],cut[1],dh-0.05,dh,frameM,false);
+          if(cut[4]){
+            /* sliding leaf, parked over about half the opening so the doorway
+               still reads as usable. Glazed with a timber frame, on a track. */
+            const mid=cut[0]+(cut[1]-cut[0])*0.55;
+            piece(cut[0]+45,mid,0.04,dh-0.07,glassM,false);
+            piece(cut[0]+45,cut[0]+100,0.04,dh-0.07,frameM,false);
+            piece(mid-55,mid,0.04,dh-0.07,frameM,false);
+            piece(cut[0]+45,mid,0.04,0.10,frameM,false);
+            piece(cut[0],cut[1],dh+0.02,dh+0.07,frameM,false);   /* track */
+          }
           at=cut[1];
           return;
         }
