@@ -13,6 +13,39 @@ with pdfplumber.open(PDF) as pdf:
     page = pdf.pages[0]
     lines, curves = page.lines, page.curves
 
+def client_rooms_ff(pieces):
+    """Corrections the client gave us about what two first-floor rooms are.
+
+    The drawing has no room labels, so tiers are inferred from the linework and
+    both of these came out wrong. These are stated facts about the house, not
+    guesses, so they are pinned by coordinate rather than left to a heuristic.
+
+      - The room off the landing is the client's working office. The 2450x700
+        run with the chair pulled up to it is a DESK, not a wardrobe.
+      - The room below it is a tatami-style bedroom. What reads as one L-shaped
+        wardrobe is two pieces: a hanging run across the head of the room, and a
+        narrow study desk down the wall with its own chair. And the bed is a
+        floor-level tatami platform, not a divan.
+    """
+    def near(b, t, tol=60):
+        return all(abs(b[i] - t[i]) <= tol for i in range(4))
+
+    out = []
+    for b in pieces:
+        if near(b, (1385, 8830, 3835, 9530)):
+            out.append([b[0], b[1], b[2], b[3], b[4], 'desk'])
+        elif near(b, (895, 9695, 2445, 11995)):
+            out.append([895, 9695, 2445, 10345,
+                        [[895, 9695, 2445, 10345]], 'cupboard'])
+            out.append([895, 10345, 1545, 11995,
+                        [[895, 10345, 1545, 11995]], 'desk'])
+        elif near(b, (895, 11980, 3745, 13130)):
+            out.append([b[0], b[1], b[2], b[3], b[4], 'tatami'])
+        else:
+            out.append(b)
+    return out
+
+
 def openings(walls):
     """Recover window openings, and strip the lines that mark them.
 
@@ -965,6 +998,9 @@ for key, (lo, hi, known_w) in PLANS.items():
         keepout = well
     furn3d = massing(furn, n_line, keepout, tiny)
 
+    if key == 'ff':
+        furn3d = client_rooms_ff(furn3d)
+
     # Client instruction about one room, not an extraction problem, so it reads
     # as one. The balcony is to be furnished with the sofa alone: the armchairs
     # and the side table ARE drawn in the plan and come through correctly, and
@@ -1289,6 +1325,25 @@ function buildFurniture(g,P){
               r.cx+((r.w>=r.d)?t:0),1.055,r.cz+((r.w>=r.d)?0:t),M.oakDark);
         }
       });
+
+    }else if(tier==="desk"){        /* worktop at 740, slim legs, modesty panel */
+      R.forEach(r=>{
+        box(r.w,0.04,r.d,r.cx,0.72,r.cz,M.oak);
+        const lw=(r.w>=r.d)?r.w:0.04, ld=(r.w>=r.d)?0.04:r.d;
+        box(sh(lw,0.16),0.34,sh(ld,0.16),r.cx,0.53,
+            r.cz-((r.w>=r.d)?(r.d/2-0.05):0)+0,M.oat);
+        [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(q=>
+          box(0.05,0.70,0.05,r.cx+q[0]*(r.w/2-0.07),0.35,
+              r.cz+q[1]*(r.d/2-0.07),M.oakDark));
+      });
+
+    }else if(tier==="tatami"){      /* floor-level platform, futon mat, pillow */
+      R.forEach(r=>{
+        box(r.w,0.16,r.d,r.cx,0.08,r.cz,M.oakDark);
+        box(sh(r.w,0.09),0.09,sh(r.d,0.09),r.cx,0.205,r.cz,M.oat);
+      });
+      box(sh(w,0.55),0.09,0.36,cx,0.29,
+          (along==="x")?cz-(d/2-0.30):cz,M.linen);
 
     }else if(tier==="bench"){       /* upholstered, backless, foot of the bed */
       R.forEach(r=>{
