@@ -878,7 +878,10 @@ for key, (lo, hi, known_w) in PLANS.items():
         # client's photograph of the built stair shows a straight landing, so
         # the landing wins and those lines are treated as setting-out only.
         stair = dict(x_low=4490, x_turn=6520, x_east=7490,
-                     fa=[6525, 7365], fb=[8530, 9560],
+                     # you start on the SOUTH flight and climb east, turn north
+                     # at the landing, then climb west along the north flight.
+                     # Client confirmed the direction off the built house.
+                     fa=[8530, 9560], fb=[6525, 7365],
                      treads_a=7, treads_b=7, risers=16)
 
         # These are stair setting-out lines, not walls. Left in, they extrude
@@ -901,7 +904,7 @@ for key, (lo, hi, known_w) in PLANS.items():
         # The same stair, in FF coordinates, so the first floor can show it
         # arriving from below instead of an empty hole in the slab.
         stair_below = dict(x_low=5310, x_turn=7340, x_east=8310,
-                           fa=[6520, 7355], fb=[8515, 9545],
+                           fa=[8515, 9545], fb=[6520, 7355],
                            treads_a=7, treads_b=7, risers=16)
 
         # Balcony: the space with the planters, up to the door. Its west and
@@ -1198,6 +1201,12 @@ function buildStair(g,P,ht){
   const nR=S.risers, rise=ht/nR, TT=0.05, NOSE=25;
   const goA=(S.x_turn-S.x_low)/S.treads_a;
   const nA=S.treads_a, LAND=nA+1;          /* landing is the (nA+1)th riser */
+  /* Which edge of each flight faces the open well between them, and how deep
+     the landing runs. Derived rather than hardcoded so the ascent can start on
+     either flight: swapping fa and fb is all it takes to reverse the stair. */
+  const aMid=(S.fa[0]+S.fa[1])/2, bMid=(S.fb[0]+S.fb[1])/2;
+  const wa=(aMid>bMid)?S.fa[0]:S.fa[1], wb=(bMid>aMid)?S.fb[0]:S.fb[1];
+  const lz0=Math.min(S.fa[0],S.fb[0]), lz1=Math.max(S.fa[1],S.fb[1]);
 
   const box=(w,h,d,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);
     o.position.set(x,y,z); g.add(o); return o;};
@@ -1208,7 +1217,7 @@ function buildStair(g,P,ht){
     steps.push({x0:S.x_low+goA*i,x1:S.x_low+goA*(i+1),
                 z0:S.fa[0],z1:S.fa[1],sign:1,top:(i+1)*rise});
   steps.push({x0:S.x_turn,x1:S.x_east,                    /* half-space landing */
-              z0:S.fa[0],z1:S.fb[1],sign:1,top:LAND*rise,landing:true});
+              z0:lz0,z1:lz1,sign:1,top:LAND*rise,landing:true});
   for(let i=0;i<S.treads_b;i++)                           /* flight B, -X */
     steps.push({x0:S.x_turn-goA*(i+1),x1:S.x_turn-goA*i,
                 z0:S.fb[0],z1:S.fb[1],sign:-1,top:(LAND+1+i)*rise});
@@ -1240,8 +1249,8 @@ function buildStair(g,P,ht){
   [S.fa[0],S.fa[1]].forEach(z=>
     slope(V(S.x_low,rise-DROP,z),V(S.x_turn,LAND*rise-DROP,z),ST,SD,stringM));
   /* landing fascia across the well side */
-  box(ST,SD,(S.fb[1]-S.fa[0])/1000,px(S.x_turn),LAND*rise-DROP,
-      pz((S.fa[0]+S.fb[1])/2),stringM);
+  box(ST,SD,(lz1-lz0)/1000,px(S.x_turn),LAND*rise-DROP,
+      pz((lz0+lz1)/2),stringM);
   /* flight B strings, both sides */
   [S.fb[0],S.fb[1]].forEach(z=>
     slope(V(S.x_turn,(LAND+1)*rise-DROP,z),V(S.x_low,nR*rise-DROP,z),ST,SD,stringM));
@@ -1249,9 +1258,9 @@ function buildStair(g,P,ht){
   /* ---- balustrade: one continuous rail around the open well ------------- */
   const RH=0.90, RT=0.055;             /* rail height above pitch, rail section */
   const runs=[
-    {a:V(S.x_low, rise+RH,        S.fa[1]), b:V(S.x_turn,LAND*rise+RH,     S.fa[1])},
-    {a:V(S.x_turn,LAND*rise+RH,   S.fa[1]), b:V(S.x_turn,(LAND+1)*rise+RH, S.fb[0])},
-    {a:V(S.x_turn,(LAND+1)*rise+RH,S.fb[0]),b:V(S.x_low, nR*rise+RH,       S.fb[0])}
+    {a:V(S.x_low, rise+RH,        wa), b:V(S.x_turn,LAND*rise+RH,     wa)},
+    {a:V(S.x_turn,LAND*rise+RH,   wa), b:V(S.x_turn,(LAND+1)*rise+RH, wb)},
+    {a:V(S.x_turn,(LAND+1)*rise+RH,wb),b:V(S.x_low, nR*rise+RH,       wb)}
   ];
   const balGeo=new THREE.CylinderGeometry(0.017,0.021,1,8), BH=RH-RT;
   runs.forEach(r=>{
@@ -1265,8 +1274,8 @@ function buildStair(g,P,ht){
     }
   });
   /* newel posts at the foot, both landing corners and the head */
-  [[S.x_low,S.fa[1],rise],[S.x_turn,S.fa[1],LAND*rise],
-   [S.x_turn,S.fb[0],(LAND+1)*rise],[S.x_low,S.fb[0],nR*rise]
+  [[S.x_low,wa,rise],[S.x_turn,wa,LAND*rise],
+   [S.x_turn,wb,(LAND+1)*rise],[S.x_low,wb,nR*rise]
   ].forEach(p=>{const h=RH+0.09; box(0.075,h,0.075,px(p[0]),p[2]+h/2,pz(p[1]),railM);});
 }
 
@@ -1287,7 +1296,7 @@ function buildFurniture(g,P){
     o.position.set(x,y,z); g.add(o);};
   /* what a seating group is arranged around: the table or sofa at its centre */
   const FOCUS=P.furn3d.filter(b=>b[5]==="sofa"||b[5]==="table"||b[5]==="coffee"
-                                 ||b[5]==="coffeeround"||b[5]==="bed")
+                                 ||b[5]==="coffeeround"||b[5]==="bed"||b[5]==="desk")
     .map(b=>({x:((b[0]+b[2])/2-P.w/2)/1000, z:((b[1]+b[3])/2-P.d/2)/1000}));
   P.furn3d.forEach((b,i)=>{
     const tier=b[5];
