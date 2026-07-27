@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+/tmp/
+
+# Source drawings — title blocks carry client and consultant names.
+# Keep these locally; never commit them to the public repo.
+data/*.pdf

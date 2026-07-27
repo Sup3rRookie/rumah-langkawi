@@ -1,0 +1,110 @@
+{
+ "assumptions": {
+  "ceiling_gf": 3.0,
+  "ceiling_ff": 3.0,
+  "rate": 12.0,
+  "coats": 2,
+  "wastage": 1.1,
+  "opening_deduction": 0.15
+ },
+ "rooms": [
+  {
+   "floor": "gf",
+   "no": 2,
+   "use": "Open plan: living / dining / kitchen / stair",
+   "floor_m2": 86.1,
+   "perimeter_m": 82.7,
+   "wall_m2": 210.9,
+   "colour": "1024"
+  },
+  {
+   "floor": "gf",
+   "no": 3,
+   "use": "Ground floor room",
+   "floor_m2": 8.4,
+   "perimeter_m": 12.1,
+   "wall_m2": 30.9,
+   "colour": "11209"
+  },
+  {
+   "floor": "gf",
+   "no": 4,
+   "use": "WC",
+   "floor_m2": 1.9,
+   "perimeter_m": 6.8,
+   "wall_m2": 17.4,
+   "colour": "1129"
+  },
+  {
+   "floor": "ff",
+   "no": 1,
+   "use": "Master suite (front bay)",
+   "floor_m2": 30.5,
+   "perimeter_m": 34.0,
+   "wall_m2": 86.8,
+   "colour": "12306"
+  },
+  {
+   "floor": "ff",
+   "no": 3,
+   "use": "Bath / walk-in",
+   "floor_m2": 3.7,
+   "perimeter_m": 9.0,
+   "wall_m2": 23.1,
+   "colour": "1129"
+  },
+  {
+   "floor": "ff",
+   "no": 4,
+   "use": "Family area",
+   "floor_m2": 20.0,
+   "perimeter_m": 26.2,
+   "wall_m2": 66.7,
+   "colour": "1024"
+  },
+  {
+   "floor": "ff",
+   "no": 5,
+   "use": "Bath / store",
+   "floor_m2": 2.2,
+   "perimeter_m": 6.1,
+   "wall_m2": 15.7,
+   "colour": "1129"
+  },
+  {
+   "floor": "ff",
+   "no": 6,
+   "use": "Bedroom",
+   "floor_m2": 24.6,
+   "perimeter_m": 27.3,
+   "wall_m2": 69.6,
+   "colour": "11209"
+  },
+  {
+   "floor": "ff",
+   "no": 7,
+   "use": "Bedroom",
+   "floor_m2": 24.1,
+   "perimeter_m": 22.6,
+   "wall_m2": 57.7,
+   "colour": "11209"
+  },
+  {
+   "floor": "ff",
+   "no": 8,
+   "use": "Bath",
+   "floor_m2": 1.8,
+   "perimeter_m": 7.3,
+   "wall_m2": 18.7,
+   "colour": "1129"
+  }
+ ],
+ "litres": {
+  "1024": 50.9,
+  "11209": 29.0,
+  "1129": 13.7,
+  "12306": 15.9
+ },
+ "primer_L": 54.8,
+ "ceiling_L": 37.3
+}
