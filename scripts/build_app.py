@@ -116,7 +116,7 @@ def openings(walls):
 
 CELL = 50.0          # footprint raster, mm per cell
 BALCONY = (895, 13290, 4710, 17375)     # ff balcony, in plan mm
-BALCONY_DROP = ('chair',)               # tiers the client wants left out of it
+BALCONY_DROP = ('chair', 'round')       # tiers the client wants left out of it
 
 
 def _join(furn, idxs, tol):
@@ -155,7 +155,7 @@ def _join(furn, idxs, tol):
     return list(g.values())
 
 
-def _chains(tiny, anchors, minlen=400.0, minside=250.0, tol=15.0):
+def _chains(tiny, anchors, minlen=400.0, minside=250.0, tol=45.0):
     """Keep short chords only when they chain into a real outline.
 
     An outline traces its own bounding box once or twice. The scribbles that
@@ -383,7 +383,7 @@ def _cover(m, R, C, maxr=6):
     return out
 
 
-def massing(furn, n_line, keepout=None, tol=30.0):
+def massing(furn, n_line, keepout=None, scribble=(), tol=30.0):
     """Group the plan's furniture linework into pieces and give each its footprint.
 
     The PDF gives loose red segments, not closed outlines. An earlier pass joined
@@ -516,18 +516,27 @@ def massing(furn, n_line, keepout=None, tol=30.0):
         # the stair is outlined in red like furniture; it is already modelled
         if keepout and ov(b, keepout) > 0.6 * ar(b):
             continue
-        pad = 2
+        pad = 3
         C = int((b[2] - b[0]) / CELL) + 1 + 2 * pad
         R = int((b[3] - b[1]) / CELL) + 1 + 2 * pad
         ox, oy = b[0] - pad * CELL, b[1] - pad * CELL
-        fill = _erode(_enclosed(_dilate(_burn(furn, g, ox, oy, R, C), R, C), R, C), R, C)
+        m = _burn(furn, g, ox, oy, R, C)
+        fill = _erode(_enclosed(_dilate(m, R, C), R, C), R, C)
         n_fill = sum(sum(r) for r in fill)
+        if n_fill * CELL * CELL / ar(b) < 0.30:
+            # A traced curve arrives as arcs with gaps wider than one cell can
+            # bridge, and the flood then leaks straight through the outline. Try
+            # a heavier close before writing the shape off as open linework.
+            f2 = _erode(_erode(_enclosed(_dilate(_dilate(m, R, C), R, C), R, C), R, C), R, C)
+            n2 = sum(sum(r) for r in f2)
+            if n2 > n_fill:
+                fill, n_fill = f2, n2
         solid = n_fill * CELL * CELL / ar(b)
         # planters and hatch bursts are open linework with nothing enclosed, so
         # there is no footprint to read; a chair's doubled outline does enclose
         # one but tracing it only buys a 50 mm step. Both want the box.
         if solid < 0.30 or ar(b) < 0.8e6:
-            pieces.append((b, [list(b)], len(g)))
+            pieces.append((b, [list(b)], len(g), solid))
             continue
         parts = _split(fill, R, C)
         masks = []
@@ -560,10 +569,11 @@ def massing(furn, n_line, keepout=None, tol=30.0):
                 1 for i in g
                 if mk[min(R - 1, max(0, int(((furn[i][1] + furn[i][3]) / 2 - oy) / CELL)))]
                      [min(C - 1, max(0, int(((furn[i][0] + furn[i][2]) / 2 - ox) / CELL)))])
-            pieces.append((pb, rects, n_seg))
+            pieces.append((pb, rects, n_seg,
+                           sum(sum(r) for r in mk) * CELL * CELL / ar(pb)))
 
     out = []
-    for b, rects, n_seg in pieces:
+    for b, rects, n_seg, fillr in pieces:
         w, d = b[2] - b[0], b[3] - b[1]
         # measure the piece by what is actually emitted: the rectangles cover the
         # footprint and never overlap, so their sum is the real plan area and
@@ -582,9 +592,13 @@ def massing(furn, n_line, keepout=None, tol=30.0):
             tier = 'rug'
         elif area <= 0.75 and ratio < 1.5 and dense > 28:
             tier = 'plant'
-        elif area <= 0.55 and ratio < 1.45 and dense > 14:
+        elif area <= 0.55 and ratio < 1.45 and 0.55 <= fillr <= 0.88:
+            # a disc fills pi/4 of its box; a square chair fills all of it, which
+            # counting segments could not tell apart once curves were captured
             tier = 'round'
-        elif area >= 0.80 and short <= 800:
+        elif short <= 800 and (area >= 0.80 or max(w, d) >= 1500):
+            # a run over 1.5 m long and under 800 deep is cabinetry however
+            # patchily the plan fills it in
             tier = 'counter'
         elif area >= 2.0 and solid < 0.78:
             tier = 'sofa'                        # an L or a U is seating
@@ -596,7 +610,10 @@ def massing(furn, n_line, keepout=None, tol=30.0):
             tier = 'table'
         else:
             tier = 'chair'
-        out.append([b[0], b[1], b[2], b[3], rects, tier, area])
+        if _dbg:
+            print('   TIER %-8s %6.0f %6.0f %6.0f %6.0f area=%.2f fill=%.2f ratio=%.2f'
+                  % (tier, b[0], b[1], b[2], b[3], area, fillr, ratio))
+        out.append([b[0], b[1], b[2], b[3], rects, tier, area, fillr, solid])
 
     # A dining table and a sofa are the same box at this scale; what tells them
     # apart is the ring of chairs. Four or more is a setting, two is a bedside.
@@ -642,12 +659,17 @@ def massing(furn, n_line, keepout=None, tol=30.0):
             continue
         w, d = p[2] - p[0], p[3] - p[1]
         oblong = max(w, d) / max(1.0, min(w, d)) >= 1.4
+        # a curved top, not a square one, measured on the rectangles rather than
+        # the raster because closing an open curve inflates it back to its box.
+        # Held above 0.8 m2 because an armchair is drawn just as softly and sits
+        # in the same place in the room.
+        soft = 0.55 <= p[8] <= 0.90 and (p[2] - p[0]) * (p[3] - p[1]) >= 0.8e6
         for s in sofas:
             if not (s[0] - 1200 <= p[2] and p[0] <= s[2] + 1200
                     and s[1] - 1200 <= p[3] and p[1] <= s[3] + 1200):
                 continue
-            if oblong or between(p, s):
-                p[5] = 'coffee'
+            if oblong or soft or between(p, s):
+                p[5] = 'coffeeround' if soft else 'coffee'
                 break
     return [p[:6] for p in out]
 
@@ -1232,6 +1254,16 @@ function buildFurniture(g,P){
         box(r.w,0.065,r.d,r.cx,0.4025,r.cz,M.oak);
       });
 
+    }else if(tier==="coffeeround"){   /* the plan draws this one as a soft blob,
+                                         so it is turned, not cut from a board */
+      R.forEach(r=>{
+        const rad=Math.max(0.05,Math.min(r.w,r.d)/2), sx=r.w/(2*rad), sz=r.d/(2*rad);
+        const top=new THREE.Mesh(new THREE.CylinderGeometry(rad,rad*0.96,0.07,28),M.oak);
+        top.position.set(r.cx,0.40,r.cz); top.scale.set(sx,1,sz); g.add(top);
+        const base=new THREE.Mesh(new THREE.CylinderGeometry(rad*0.44,rad*0.56,0.365,20),M.oakDark);
+        base.position.set(r.cx,0.1825,r.cz); base.scale.set(sx,1,sz); g.add(base);
+      });
+
     }else if(tier==="table"){                      /* thin top, four slim legs */
       R.forEach(r=>{
         box(r.w,0.04,r.d,r.cx,0.73,r.cz,M.oak);
@@ -1415,19 +1447,30 @@ function build(){
       buildStair(sg,{w:P.w,d:P.d,stair:P.stair_below},H.gf);
     }
     if(P.guard) buildGuard(g,P);
-    /* balcony parapet: waist height with a timber coping, not a wall */
+    /* balcony balustrade: glazed, at the same waist height as the solid
+       parapet it replaces. Shoe rail, glass infill, timber handrail capping
+       it, slim posts at intervals. */
     if(P.parapet){
-      const PH=1.00, PT=0.11;
-      const wallM=new THREE.MeshLambertMaterial({color:new THREE.Color("#efe9df")}),
-            copeM=new THREE.MeshLambertMaterial({color:new THREE.Color("#cbb08a")});
+      const PH=1.00, GT=0.019, SHOE=0.07, CAP=0.055;
+      const glassM=new THREE.MeshLambertMaterial({color:new THREE.Color("#9fb4bd"),
+              transparent:true,opacity:0.26,side:THREE.DoubleSide}),
+            capM=new THREE.MeshLambertMaterial({color:new THREE.Color("#cbb08a")}),
+            postM=new THREE.MeshLambertMaterial({color:new THREE.Color("#4c4c49")});
       P.parapet.forEach(p=>{
         const ax=(p[0]-P.w/2)/1000, az=(p[1]-P.d/2)/1000,
               bx=(p[2]-P.w/2)/1000, bz=(p[3]-P.d/2)/1000;
         const len=Math.hypot(bx-ax,bz-az), rot=-Math.atan2(bz-az,bx-ax);
-        const m=new THREE.Mesh(new THREE.BoxGeometry(len,PH,PT),wallM);
-        m.position.set((ax+bx)/2,PH/2,(az+bz)/2); m.rotation.y=rot; g.add(m);
-        const c=new THREE.Mesh(new THREE.BoxGeometry(len,0.05,PT+0.05),copeM);
-        c.position.set((ax+bx)/2,PH+0.025,(az+bz)/2); c.rotation.y=rot; g.add(c);
+        const at=(w,h,d,y,m)=>{const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);
+          o.position.set((ax+bx)/2,y,(az+bz)/2); o.rotation.y=rot; g.add(o);};
+        at(len,SHOE,0.09,SHOE/2,postM);                       /* shoe rail */
+        at(len,PH-SHOE-CAP,GT,SHOE+(PH-SHOE-CAP)/2,glassM);   /* glass infill */
+        at(len,CAP,0.075,PH-CAP/2,capM);                      /* timber handrail */
+        const n=Math.max(1,Math.round(len/1.35));
+        for(let i=0;i<=n;i++){
+          const t=i/n, o=new THREE.Mesh(new THREE.BoxGeometry(0.05,PH-CAP,0.05),postM);
+          o.position.set(ax+(bx-ax)*t,(PH-CAP)/2,az+(bz-az)*t);
+          o.rotation.y=rot; g.add(o);
+        }
       });
     }
     root.add(g);
