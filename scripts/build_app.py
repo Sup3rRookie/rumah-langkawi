@@ -1478,6 +1478,9 @@ function buildFurniture(g,P){
   const M={}; for(const k in JAPANDI)
     M[k]=new THREE.MeshLambertMaterial({color:new THREE.Color(JAPANDI[k])});
   const sh=(v,c)=>Math.max(0.06,v-c);
+  /* One height for every piece of tall joinery, so a cupboard and the niche
+     next to it line up. They were 2.07 and 2.34, which stepped where they met. */
+  const TALLH=2.35;
   const box=(w,h,d,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);
     o.position.set(x,y,z); g.add(o);};
   const cyl=(r,h,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.CylinderGeometry(r,r*0.82,h,14),m);
@@ -1557,13 +1560,16 @@ function buildFurniture(g,P){
         box(r.w,0.72,r.d,r.cx,0.46,r.cz,M.oak);
         box(r.w,0.04,r.d,r.cx,0.84,r.cz,M.oat);
         underLED(r,0.80);
-        /* recessed stone back, set behind the face of the run */
-        box(r.w-(s.ax?back:0),1.45,r.d-(s.ax?0:back),
-            r.cx-s.x*back/2,1.61,r.cz-s.z*back/2,M.oat);
+        /* recessed stone back, set behind the face of the run. Tops out at the
+           same TALLH as the cupboard beside it, or the joinery wall steps. */
+        const rh=TALLH-0.86, ry=0.86+rh/2;
+        box(r.w-(s.ax?back:0),rh,r.d-(s.ax?0:back),
+            r.cx-s.x*back/2,ry,r.cz-s.z*back/2,M.oat);
         /* oak reveals framing the recess, and the arch head over it */
-        [-1,1].forEach(k=>box(s.ax?r.w:0.09,1.45,s.ax?0.09:r.d,
-          r.cx+(s.ax?0:k*(run/2-0.045)),1.61,r.cz+(s.ax?k*(run/2-0.045):0),M.oak));
-        arcRing(r,s,run,2.10,0.075,M.oak);
+        [-1,1].forEach(k=>box(s.ax?r.w:0.09,rh,s.ax?0.09:r.d,
+          r.cx+(s.ax?0:k*(run/2-0.045)),ry,r.cz+(s.ax?k*(run/2-0.045):0),M.oak));
+        arcRing(r,s,run,TALLH-0.22,0.075,M.oak);
+        box(s.ax?r.w:0.09,0.05,s.ax?0.09:r.d,r.cx,TALLH-0.025,r.cz,M.oat);
         /* two shelves, each with its own strip washing the stone behind */
         [1.18,1.52].forEach(y=>{
           box(s.ax?r.w*0.86:0.26,0.035,s.ax?0.26:r.d*0.86,
@@ -1578,15 +1584,16 @@ function buildFurniture(g,P){
                                        door leaves, cornice. At counter height a
                                        wardrobe reads as a kitchen unit. */
       R.forEach(r=>{
+        const carc=TALLH-0.09-0.05;
         box(sh(r.w,0.06),0.09,sh(r.d,0.06),r.cx,0.045,r.cz,M.char);
-        box(r.w,1.93,r.d,r.cx,1.055,r.cz,M.oak);
-        box(r.w,0.05,r.d,r.cx,2.045,r.cz,M.oat);
-        /* leaf joints, so 2.1 m of carcass does not read as a blank wall */
+        box(r.w,carc,r.d,r.cx,0.09+carc/2,r.cz,M.oak);
+        box(r.w,0.05,r.d,r.cx,TALLH-0.025,r.cz,M.oat);
+        /* leaf joints, so a tall blank carcass does not read as a wall */
         const run=(r.w>=r.d)?r.w:r.d, n=Math.max(2,Math.round(run/0.55));
         for(let j=1;j<n;j++){
           const t=-run/2+run*j/n;
-          box((r.w>=r.d)?0.016:r.w+0.006,1.83,(r.w>=r.d)?r.d+0.006:0.016,
-              r.cx+((r.w>=r.d)?t:0),1.055,r.cz+((r.w>=r.d)?0:t),M.oakDark);
+          box((r.w>=r.d)?0.016:r.w+0.006,carc-0.10,(r.w>=r.d)?r.d+0.006:0.016,
+              r.cx+((r.w>=r.d)?t:0),0.09+carc/2,r.cz+((r.w>=r.d)?0:t),M.oakDark);
         }
       });
 
