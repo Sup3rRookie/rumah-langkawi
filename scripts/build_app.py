@@ -989,15 +989,12 @@ for key, (lo, hi, known_w) in PLANS.items():
     print('   %s: %d window openings, %d glazing lines pulled out of the walls'
           % (key, len(wins), n_pre - len(walls)))
 
-    if key == 'ff':
-        # The drawing breaks the south wall of the tatami bedroom around a
-        # stippled box at x 2918..3696, so the extraction found no wall there
-        # and the model showed a 1070 mm hole. Client says it is plain wall.
-        # Added after openings() on purpose: the two faces are 160 mm apart,
-        # which is inside the window band, so patching earlier would invent a
-        # window here.
-        walls += [[2805, 13125, 3875, 13125], [2555, 13285, 3725, 13285]]
-        print('   ff: closed the tatami bedroom wall break (client: plain wall)')
+    # NOTE: an earlier version patched a wall across x 2805..3875 at z 13125 on
+    # the first floor, to close what looked like a hole in the tatami bedroom.
+    # It is not a hole. The drawing breaks the wall there because it is a
+    # DOORWAY, drawn with the leaf standing open. Closing it walled up a door.
+    # Left here as a warning: a break in a wall face is more often an opening
+    # than a defect in the extraction.
     for q in wins:
         print('      %s wall at %-7.0f  %6.0f..%-6.0f  width %5.0f  thk %3.0f'
               % (q['o'], q['c'], q['a'], q['b'], q['b'] - q['a'], q['t']))
