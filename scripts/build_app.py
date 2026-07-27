@@ -1621,11 +1621,14 @@ function buildFurniture(g,P){
         const rh=TALLH-0.86, ry=0.86+rh/2;
         box(r.w-(s.ax?back:0),rh,r.d-(s.ax?0:back),
             r.cx-s.x*back/2,ry,r.cz-s.z*back/2,M.oat);
-        /* oak reveals framing the recess, and the arch head over it */
-        [-1,1].forEach(k=>box(s.ax?r.w:0.09,rh,s.ax?0.09:r.d,
-          r.cx+(s.ax?0:k*(run/2-0.045)),ry,r.cz+(s.ax?k*(run/2-0.045):0),M.oak));
+        /* Oak reveals at the two ENDS of the run, framing the recess. The
+           offset goes along the run's own long axis: for a unit running in Z
+           that is Z. Offsetting in X instead threw them run/2 out sideways,
+           which pushed them clean through the wall behind. */
+        [-1,1].forEach(k=>box(s.ax?0.09:r.w,rh,s.ax?r.d:0.09,
+          r.cx+(s.ax?k*(r.w/2-0.045):0),ry,r.cz+(s.ax?0:k*(r.d/2-0.045)),M.oak));
         arcRing(r,s,run,TALLH-0.22,0.075,M.oak);
-        box(s.ax?r.w:0.09,0.05,s.ax?0.09:r.d,r.cx,TALLH-0.025,r.cz,M.oat);
+        box(r.w,0.05,r.d,r.cx,TALLH-0.025,r.cz,M.oat);   /* cornice over it */
         /* two shelves, each with its own strip washing the stone behind */
         [1.18,1.52].forEach(y=>{
           box(s.ax?r.w*0.86:0.26,0.035,s.ax?0.26:r.d*0.86,
