@@ -117,10 +117,11 @@ def client_rooms_gf(pieces):
     window. The tall bank is at the DINING end, not the window end. The south
     leg carries the sink and hob and is worktop throughout.
     """
-    # One 600 mm door of full height at the dining end, per the client, then
-    # worktop up to the niche. The niche and the run beyond it keep the
-    # positions they already had, so only the tall bank changes.
-    TALL, NICHE, GAP = 600.0, 1200.0, 600.0
+    # One 600 mm door of full height at the dining end, per the client, with
+    # the niche butted straight up against it. Dropping the tall bank from two
+    # doors to one left 600 mm of worktop stranded between them, so the niche
+    # slides up to close it and the worktop picks up beyond.
+    TALL, NICHE, GAP = 600.0, 1200.0, 0.0
     out = []
     for b in pieces:
         if (abs(b[0] - 4640) < 60 and abs(b[1] - 13290) < 60
@@ -130,14 +131,14 @@ def client_rooms_gf(pieces):
                     a = r[1] + TALL
                     n0 = a + GAP
                     c = n0 + NICHE
-                    out.append([r[0], r[1], r[2], a,
-                                [[r[0], r[1], r[2], a]], 'cupboard'])
-                    out.append([r[0], a, r[2], n0,
-                                [[r[0], a, r[2], n0]], 'counter'])
-                    out.append([r[0], n0, r[2], c,
-                                [[r[0], n0, r[2], c]], 'niche'])
-                    out.append([r[0], c, r[2], r[3],
-                                [[r[0], c, r[2], r[3]]], 'counter'])
+                    for z0, z1, tier in ((r[1], a, 'cupboard'),
+                                         (a, n0, 'counter'),
+                                         (n0, c, 'niche'),
+                                         (c, r[3], 'counter')):
+                        if z1 - z0 < 60:          # GAP of 0 leaves an empty run
+                            continue
+                        out.append([r[0], z0, r[2], z1,
+                                    [[r[0], z0, r[2], z1]], tier])
                 else:
                     out.append([r[0], r[1], r[2], r[3], [list(r)], 'counter'])
         else:
