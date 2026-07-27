@@ -500,14 +500,9 @@ def massing(furn, n_line, keepout=None, scribble=(), tol=30.0):
         runs.setdefault(root(i), []).extend(groups[i])
     groups = list(runs.values())
 
-    import os
-    _dbg = [float(v) for v in os.environ['MASSDEBUG'].split(',')] if os.environ.get('MASSDEBUG') else None
-
     pieces = []
     for g in groups:
         b = _bbox(furn, g)
-        if _dbg and _dbg[0] <= b[0] and b[2] <= _dbg[2] and _dbg[1] <= b[1] and b[3] <= _dbg[3]:
-            print('   GROUP %6.0f %6.0f %6.0f %6.0f segs=%d' % (b[0], b[1], b[2], b[3], len(g)))
         # detail lines, hatching, noise. The min-side test drops leader lines and
         # dimension ticks, which pass on area alone and then extrude as fins.
         if ((b[2] - b[0]) * (b[3] - b[1]) < 0.15e6
@@ -610,9 +605,6 @@ def massing(furn, n_line, keepout=None, scribble=(), tol=30.0):
             tier = 'table'
         else:
             tier = 'chair'
-        if _dbg:
-            print('   TIER %-8s %6.0f %6.0f %6.0f %6.0f area=%.2f fill=%.2f ratio=%.2f'
-                  % (tier, b[0], b[1], b[2], b[3], area, fillr, ratio))
         out.append([b[0], b[1], b[2], b[3], rects, tier, area, fillr, solid])
 
     # A dining table and a sofa are the same box at this scale; what tells them
@@ -636,33 +628,34 @@ def massing(furn, n_line, keepout=None, scribble=(), tol=30.0):
     # strokes, hundreds of them, inside the carcass outline. The kitchen has a
     # sink and a hob drawn in and nothing like that. So the tall tier is decided
     # by what is drawn inside the piece, not by guessing from its proportions.
-    for p in out:
-        if p[5] != 'counter':
-            continue
-        n = sum(1 for s in scribble
-                if p[0] <= (s[0] + s[2]) / 2 <= p[2] and p[1] <= (s[1] + s[3]) / 2 <= p[3])
-        if n >= 40:
-            p[5] = 'cupboard'
+    # Runs after the coffee pass below, so a curved top that also sits over a
+    # patch of short chords has already been taken out of the running.
+    def cupboards():
+        for p in out:
+            if p[5] != 'counter':
+                continue
+            n = sum(1 for s in scribble
+                    if p[0] <= (s[0] + s[2]) / 2 <= p[2]
+                    and p[1] <= (s[1] + s[3]) / 2 <= p[3])
+            if n >= 40:
+                p[5] = 'cupboard'
 
     # Bedroom fittings read off the bed they serve. A small piece pulled up to
     # the head of a bed is a bedside table, and a shallow run across its foot is
     # a bench: both are drawn as plain rectangles that say nothing on their own.
-    beds = [p for p in out if p[5] == 'bed']
-
-    def near(p, q, gap):
-        return (q[0] - gap <= p[2] and p[0] <= q[2] + gap
-                and q[1] - gap <= p[3] and p[1] <= q[3] + gap)
-
-    for p in out:
-        w, d = p[2] - p[0], p[3] - p[1]
-        for q in beds:
-            if not near(p, q, 700):
-                continue
-            if p[5] in ('chair', 'round') and p[6] <= 0.40:
-                p[5] = 'round'
-            elif p[5] == 'counter' and min(w, d) <= 700 and max(w, d) <= 2500:
-                p[5] = 'bench'
-            break
+    def bedroom():
+        beds = [p for p in out if p[5] == 'bed']
+        for p in out:
+            w, d = p[2] - p[0], p[3] - p[1]
+            for q in beds:
+                if not (q[0] - 700 <= p[2] and p[0] <= q[2] + 700
+                        and q[1] - 700 <= p[3] and p[1] <= q[3] + 700):
+                    continue
+                if p[5] in ('chair', 'round') and p[6] <= 0.40:
+                    p[5] = 'round'
+                elif p[5] == 'counter' and min(w, d) <= 700 and max(w, d) <= 2500:
+                    p[5] = 'bench'
+                break
 
     # A coffee table is a low slab parked in front of seating. Its own size says
     # nothing — at 0.7 x 1.2 m it reads as cabinetry — but its position does:
@@ -704,6 +697,8 @@ def massing(furn, n_line, keepout=None, scribble=(), tol=30.0):
             if oblong or soft or between(p, s):
                 p[5] = 'coffeeround' if soft else 'coffee'
                 break
+    cupboards()
+    bedroom()
     return [p[:6] for p in out]
 
 
@@ -776,7 +771,13 @@ for key, (lo, hi, known_w) in PLANS.items():
     # lines and curves. Judged one chord at a time they read as noise and were
     # thrown away, which is why the round coffee table never reached the model.
     # Judged as a chain they are unmistakable, and a hanger tick still is not.
-    furn += _chains(tiny, furn)
+    kept = _chains(tiny, furn)
+    furn += kept
+    # A scribble is exactly a short chord that did not turn out to be part of an
+    # outline, which is what the hanging clothes inside a wardrobe are. Counting
+    # all short chords instead would call the round coffee table a wardrobe.
+    seen = set(map(tuple, kept))
+    scrib = [s for s in tiny if tuple(s) not in seen]
     # Whole pieces are drawn as PDF rects, not lines: the dining table, the
     # wardrobe runs, most bed carcasses. Read as lines only, they were missing
     # from the model entirely, which is why the dining set was chairs and air.
@@ -1248,6 +1249,10 @@ function buildFurniture(g,P){
     o.position.set(x,y,z); g.add(o);};
   const cyl=(r,h,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.CylinderGeometry(r,r*0.82,h,14),m);
     o.position.set(x,y,z); g.add(o);};
+  /* what a seating group is arranged around: the table or sofa at its centre */
+  const FOCUS=P.furn3d.filter(b=>b[5]==="sofa"||b[5]==="table"||b[5]==="coffee"
+                                 ||b[5]==="coffeeround"||b[5]==="bed")
+    .map(b=>({x:((b[0]+b[2])/2-P.w/2)/1000, z:((b[1]+b[3])/2-P.d/2)/1000}));
   P.furn3d.forEach((b,i)=>{
     const tier=b[5];
     /* b[4] is the piece's real footprint, merged rectangles rather than one box,
@@ -1315,14 +1320,18 @@ function buildFurniture(g,P){
       });
 
     }else if(tier==="coffeeround"){   /* the plan draws this one as a soft blob,
-                                         so it is turned, not cut from a board */
-      R.forEach(r=>{
-        const rad=Math.max(0.05,Math.min(r.w,r.d)/2), sx=r.w/(2*rad), sz=r.d/(2*rad);
-        const top=new THREE.Mesh(new THREE.CylinderGeometry(rad,rad*0.96,0.07,28),M.oak);
-        top.position.set(r.cx,0.40,r.cz); top.scale.set(sx,1,sz); g.add(top);
-        const base=new THREE.Mesh(new THREE.CylinderGeometry(rad*0.44,rad*0.56,0.365,20),M.oakDark);
-        base.position.set(r.cx,0.1825,r.cz); base.scale.set(sx,1,sz); g.add(base);
-      });
+                                         so it is turned, not cut from a board.
+                                         Built once over the whole piece: the
+                                         rectangles are only a cover of a round
+                                         shape, and one turning per rectangle
+                                         comes out as a heap of discs. */
+      const bw=(b[2]-b[0])/1000, bd=(b[3]-b[1])/1000,
+            bcx=((b[0]+b[2])/2-P.w/2)/1000, bcz=((b[1]+b[3])/2-P.d/2)/1000;
+      const rad=Math.max(0.05,Math.min(bw,bd)/2), sx=bw/(2*rad), sz=bd/(2*rad);
+      const top=new THREE.Mesh(new THREE.CylinderGeometry(rad,rad*0.96,0.07,28),M.oak);
+      top.position.set(bcx,0.40,bcz); top.scale.set(sx,1,sz); g.add(top);
+      const base=new THREE.Mesh(new THREE.CylinderGeometry(rad*0.44,rad*0.56,0.365,20),M.oakDark);
+      base.position.set(bcx,0.1825,bcz); base.scale.set(sx,1,sz); g.add(base);
 
     }else if(tier==="table"){                      /* thin top, four slim legs */
       R.forEach(r=>{
