@@ -835,6 +835,19 @@ def massing(furn, n_line, keepout=None, scribble=(), tol=30.0):
     return [p[:6] for p in out]
 
 
+# Room boxes, for painting a whole room at once. They overlap heavily (the
+# ground floor open plan is 86 m2 and encloses the others), so the app picks
+# the SMALLEST box containing the click, which resolves the nesting.
+ROOMS = {}
+try:
+    _rs = json.loads((ROOT / 'data' / 'room-schedule.json').read_text())
+    for _k in ('gf', 'ff'):
+        ROOMS[_k] = sorted(
+            [[s['x'], s['y'], s['x'] + s['w'], s['y'] + s['h'], round(s['area'], 1)]
+             for s in _rs[_k]['spaces']], key=lambda r: r[4])
+except Exception as _e:
+    print('   no room schedule, room paint scope disabled:', _e)
+
 data = {}
 STAIRBOX = {}
 for key, (lo, hi, known_w) in PLANS.items():
@@ -1256,7 +1269,7 @@ for key, (lo, hi, known_w) in PLANS.items():
                      walls=walls, furn=overlay, furn3d=furn3d, stair=stair,
                      well=well, guard=guard, align=align,
                      stair_below=stair_below, wins=wins, parapet=parapet,
-                     screens=screens, arch=arch)
+                     screens=screens, arch=arch, rooms=ROOMS.get(key, []))
     from collections import Counter
     print(key, data[key]['w'], 'x', data[key]['d'], 'walls', len(walls),
           'furn', len(furn), '->', len(furn3d), 'pieces,',
@@ -1408,6 +1421,10 @@ padding:9px;font-size:12px;cursor:pointer}
 <button id="sheetBtn" aria-expanded="false">Controls</button>
 <aside>
 <div class="grp"><h2>Paint</h2><div class="pal" id="pal"></div>
+<div class="row"><label for="scope">Apply to</label><select id="scope">
+<option value="wall">One wall</option><option value="room">Whole room</option>
+<option value="floor">Whole floor</option><option value="all">Whole house</option>
+</select></div>
 <p class="note">Pick a colour, then click any wall face in the model. Shift-click paints every
 wall on that floor at once.</p></div>
 <div class="grp"><h2>Daylight</h2>
@@ -1974,7 +1991,7 @@ function build(){
         const m=new THREE.Mesh(new THREE.BoxGeometry(len,y1-y0,th),mat);
         m.position.set((ax+bx)/2,(y0+y1)/2,(az+bz)/2);
         m.rotation.y=-Math.atan2(bz-az,bx-ax);
-        if(paintable){m.userData={floor:k,idx:i,code:"1024"}; wallMeshes.push(m);}
+        if(paintable){m.userData={floor:k,idx:i,code:"1024",seg:w}; wallMeshes.push(m);}
         g.add(m);
       };
       const solid=new THREE.MeshLambertMaterial({color:new THREE.Color("#efe9df")});
@@ -1985,7 +2002,7 @@ function build(){
         const m=new THREE.Mesh(new THREE.BoxGeometry(Math.hypot(bx-ax,bz-az),ht,th),solid);
         m.position.set((ax+bx)/2,ht/2,(az+bz)/2);
         m.rotation.y=-Math.atan2(bz-az,bx-ax);
-        m.userData={floor:k,idx:i,code:"1024"};
+        m.userData={floor:k,idx:i,code:"1024",seg:w};
         g.add(m); wallMeshes.push(m);
         return;
       }
@@ -2196,12 +2213,46 @@ renderer.domElement.addEventListener("click",e=>{
   const hit=ray.intersectObjects(wallMeshes.filter(m=>m.parent.visible),false)[0];
   if(!hit)return;
   const P=PALETTE[pick];
-  if(e.shiftKey){
-    const f=hit.object.userData.floor;
-    wallMeshes.forEach(m=>{if(m.userData.floor===f){m.material.color.set(P[2]);m.userData.code=P[0];}});
-  }else{hit.object.material.color.set(P[2]); hit.object.userData.code=P[0];}
+  /* shift still forces a whole floor, whatever the scope selector says */
+  const scope=e.shiftKey?"floor":document.getElementById("scope").value;
+  const paint=m=>{m.material.color.set(P[2]); m.userData.code=P[0];};
+  const f=hit.object.userData.floor;
+
+  if(scope==="all"){ wallMeshes.forEach(paint); }
+  else if(scope==="floor"){ wallMeshes.forEach(m=>{if(m.userData.floor===f)paint(m);}); }
+  else if(scope==="room"){
+    /* find the room from where the click landed on the floor plan, taking the
+       SMALLEST box that contains it: the boxes nest, and the ground floor open
+       plan encloses nearly everything else. */
+    const PL=PLAN[f], off=OFF[f]||0;
+    const mx=(hit.point.x/SCALE-off)*1000+PL.w/2, mz=hit.point.z/SCALE*1000+PL.d/2;
+    const pad=140;
+    let room=null;
+    (PL.rooms||[]).forEach(q=>{
+      if(!room && mx>=q[0]-pad && mx<=q[2]+pad && mz>=q[1]-pad && mz<=q[3]+pad) room=q;
+    });
+    if(!room){ paint(hit.object); }
+    else{
+      /* every wall lying on that room's perimeter */
+      wallMeshes.forEach(m=>{
+        if(m.userData.floor!==f) return;
+        const s=m.userData.seg; if(!s) return;
+        const a=Math.min(s[0],s[2]), b=Math.max(s[0],s[2]),
+              c=Math.min(s[1],s[3]), d=Math.max(s[1],s[3]);
+        const insideX=b>=room[0]-pad&&a<=room[2]+pad;
+        const insideZ=d>=room[1]-pad&&c<=room[3]+pad;
+        if(!(insideX&&insideZ)) return;
+        const onEdge=Math.abs(c-room[1])<pad||Math.abs(d-room[3])<pad||
+                     Math.abs(a-room[0])<pad||Math.abs(b-room[2])<pad;
+        if(onEdge) paint(m);
+      });
+      document.getElementById("cap").textContent=P[0]+" "+P[1]+" · room "+room[4]+" m2";
+    }
+  }
+  else paint(hit.object);
+
   document.getElementById("chip").style.background=P[2];
-  document.getElementById("cap").textContent=P[0]+" "+P[1];
+  if(scope!=="room") document.getElementById("cap").textContent=P[0]+" "+P[1];
   frame();});
 const pal=document.getElementById("pal");
 PALETTE.forEach((p,i)=>{const b=document.createElement("button");
