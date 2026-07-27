@@ -168,11 +168,27 @@ def massing(furn, tol=80.0):
         area = (bx1 - bx0) * (by1 - by0) / 1e6
         if area < 0.15:                 # detail lines, hatching, noise
             continue
-        if area >= 6.0:   h, tier = 0.04, 'rug'    # rugs and floor inlays
-        elif area >= 2.5: h, tier = 0.45, 'soft'   # beds, sofa groups
-        elif area >= 0.9: h, tier = 0.75, 'table'  # tables, counters, islands
-        else:             h, tier = 0.45, 'small'  # chairs, side tables
-        out.append([bx0, by0, bx1, by1, h, tier])
+        w, d = bx1 - bx0, by1 - by0
+        ratio = max(w, d) / max(1.0, min(w, d))
+        # Planters and round tables are drawn as many short segments around a
+        # small near-square outline; real carcasses are a handful of long ones.
+        dense = len(c) / max(1.0, area)
+
+        if area >= 6.0:
+            tier = 'rug'
+        elif area <= 0.75 and ratio < 1.5 and dense > 28:
+            tier = 'plant'
+        elif area <= 0.55 and ratio < 1.45 and dense > 14:
+            tier = 'round'
+        elif area >= 2.2 and ratio >= 1.7:
+            tier = 'sofa'
+        elif area >= 2.2:
+            tier = 'bed'
+        elif area >= 0.75:
+            tier = 'table'
+        else:
+            tier = 'chair'
+        out.append([bx0, by0, bx1, by1, tier])
     return out
 
 
@@ -316,9 +332,12 @@ for key, (lo, hi, known_w) in PLANS.items():
         stair_below = dict(x_low=5310, x_turn=7340, x_east=8310,
                            fa=[6520, 7355], fb=[8515, 9545],
                            treads_a=7, treads_b=7, risers=16)
+        # x=5310 runs on to z 9695 where it meets the south wall, so the range
+        # has to reach past the well or the whole line survives and stands as a
+        # 3 m wall right at the stair. x=5380 is a second line down the well.
         SL = [('h', 6520, 5310, 8310), ('h', 7355, 5310, 8310),
               ('h', 8515, 5310, 8310), ('v', 7340, 6520, 9545),
-              ('v', 5310, 6520, 9545),
+              ('v', 5310, 6520, 9700), ('v', 5380, 7355, 9545),
               ('hband', 7356, 8514, 7340, 8310)]
 
     if SL:
@@ -613,21 +632,53 @@ function buildFurniture(g,P){
   const sh=(v,c)=>Math.max(0.06,v-c);
   const box=(w,h,d,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);
     o.position.set(x,y,z); g.add(o);};
+  const cyl=(r,h,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.CylinderGeometry(r,r*0.82,h,14),m);
+    o.position.set(x,y,z); g.add(o);};
   P.furn3d.forEach((b,i)=>{
     const cx=((b[0]+b[2])/2-P.w/2)/1000, cz=((b[1]+b[3])/2-P.d/2)/1000;
-    const w=(b[2]-b[0])/1000, d=(b[3]-b[1])/1000, tier=b[5];
+    const w=(b[2]-b[0])/1000, d=(b[3]-b[1])/1000, tier=b[4];
+    const along=(w>=d)?"x":"z";                    /* long axis of the piece */
+    const LW=(along==="x")?w:0.09, LD=(along==="x")?0.09:d;
     if(tier==="rug"){
       box(sh(w,0.06),0.012,sh(d,0.06),cx,0.012,cz,M.oat);
-    }else if(tier==="soft"){                       /* low platform + upholstery */
-      box(w,0.12,d,cx,0.06,cz,M.oak);
-      box(sh(w,0.12),0.30,sh(d,0.12),cx,0.27,cz,M.linen);
-    }else if(tier==="table"){                      /* thin top on an inset base */
-      box(w,0.045,d,cx,0.7275,cz,M.oak);
-      box(sh(w,0.22),0.70,sh(d,0.22),cx,0.35,cz,M.oakDark);
-    }else{                                         /* chairs, side tables */
-      const m=(i%5===0)?M.char:((i%5===3)?M.sage:M.oak);
-      box(w,0.40,d,cx,0.20,cz,m);
-      box(sh(w,0.05),0.045,sh(d,0.05),cx,0.4225,cz,M.linen);
+
+    }else if(tier==="sofa"){        /* seat on a recessed oak plinth, back, arms */
+      box(sh(w,0.10),0.06,sh(d,0.10),cx,0.09,cz,M.oakDark);
+      box(w,0.22,d,cx,0.27,cz,M.linen);
+      const bx=(along==="x")?cx:cx-(w/2-0.09), bz=(along==="x")?cz-(d/2-0.09):cz;
+      box((along==="x")?w:0.18,0.42,(along==="x")?0.18:d,bx,0.44,bz,M.linen);
+      const s=(along==="x")?1:0;
+      box(s?0.14:w,0.14,s?d:0.14,cx-(s?w/2-0.07:0),0.45,cz-(s?0:d/2-0.07),M.linen);
+      box(s?0.14:w,0.14,s?d:0.14,cx+(s?w/2-0.07:0),0.45,cz+(s?0:d/2-0.07),M.linen);
+
+    }else if(tier==="bed"){                        /* low platform, quilt, pillow */
+      box(w,0.14,d,cx,0.07,cz,M.oak);
+      box(sh(w,0.10),0.20,sh(d,0.10),cx,0.24,cz,M.linen);
+      box(sh(w,0.30),0.10,0.34,cx,0.39,cz-(d/2-0.28),M.oat);
+
+    }else if(tier==="table"){                      /* thin top, four slim legs */
+      box(w,0.04,d,cx,0.73,cz,M.oak);
+      [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(q=>
+        box(0.055,0.71,0.055,cx+q[0]*(w/2-0.07),0.355,cz+q[1]*(d/2-0.07),M.oakDark));
+
+    }else if(tier==="round"){                      /* pedestal side table */
+      cyl(Math.min(w,d)/2,0.035,cx,0.44,cz,M.oak);
+      cyl(0.045,0.42,cx,0.22,cz,M.char);
+      cyl(Math.min(w,d)/4,0.025,cx,0.02,cz,M.char);
+
+    }else if(tier==="plant"){                      /* planter and foliage */
+      cyl(Math.min(w,d)/2.6,0.34,cx,0.17,cz,M.oakDark);
+      const f=new THREE.Mesh(new THREE.SphereGeometry(Math.min(w,d)/2.2,12,9),M.sage);
+      f.position.set(cx,0.34+Math.min(w,d)/2.4,cz); f.scale.y=1.25; g.add(f);
+
+    }else{                                         /* chair: seat, legs, back */
+      const m=(i%5===0)?M.char:M.oak;
+      box(sh(w,0.08),0.05,sh(d,0.08),cx,0.42,cz,M.linen);
+      [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(q=>
+        box(0.04,0.40,0.04,cx+q[0]*(w/2-0.06),0.20,cz+q[1]*(d/2-0.06),m));
+      box((along==="x")?w:0.06,0.38,(along==="x")?0.06:d,
+          (along==="x")?cx:cx-(w/2-0.04),0.63,
+          (along==="x")?cz-(d/2-0.04):cz,m);
     }
   });
 }
