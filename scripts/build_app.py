@@ -46,6 +46,57 @@ def client_rooms_ff(pieces):
     return out
 
 
+def clip_to_walls(pieces, walls, tol=170.0):
+    """Pull furniture back off the wall lines it overshoots.
+
+    Cabinets are drawn to the wall's structural line rather than its inner
+    face, so a 600 mm unit against a 150 mm wall comes out 650 deep and pokes
+    through the wall plane in 3D. Any edge that crosses a wall line by less
+    than `tol` is trimmed back to it. Bigger overlaps are left alone: those are
+    not drafting overshoot, they are a piece genuinely spanning an opening.
+    """
+    vs = sorted({w[0] for w in walls if abs(w[0] - w[2]) < 1})
+    hs = sorted({w[1] for w in walls if abs(w[1] - w[3]) < 1})
+
+    def trim(r):
+        x0, z0, x1, z1 = r
+        # Only ever pull back the SHORT side. The overshoot is the unit's depth
+        # running into the wall it stands against; clipping the long run as
+        # well chopped cabinets short at every perpendicular wall and window
+        # jamb they passed, leaving gaps in a continuous run of joinery.
+        if (x1 - x0) <= (z1 - z0):
+            for c in vs:
+                if x0 < c < x1:
+                    if x1 - c < tol:
+                        x1 = c
+                    elif c - x0 < tol:
+                        x0 = c
+        else:
+            for c in hs:
+                if z0 < c < z1:
+                    if z1 - c < tol:
+                        z1 = c
+                    elif c - z0 < tol:
+                        z0 = c
+        return [x0, z0, x1, z1]
+
+    out, n_trim = [], 0
+    for b in pieces:
+        rects = []
+        for r in b[4]:
+            t = trim(r)
+            if t != list(r[:4]):
+                n_trim += 1
+            if t[2] - t[0] > 60 and t[3] - t[1] > 60:
+                rects.append(t)
+        if not rects:
+            continue
+        xs = [v for r in rects for v in (r[0], r[2])]
+        zs = [v for r in rects for v in (r[1], r[3])]
+        out.append([min(xs), min(zs), max(xs), max(zs), rects, b[-1]])
+    return out, n_trim
+
+
 def client_rooms_gf(pieces):
     """Kitchen corrections from the client's interior renders.
 
@@ -1134,6 +1185,11 @@ for key, (lo, hi, known_w) in PLANS.items():
 
     if key == 'gf':
         furn3d = client_rooms_gf(furn3d)
+
+    furn3d, n_trim = clip_to_walls(furn3d, walls)
+    if n_trim:
+        print('   %s: pulled %d furniture edges back off the wall lines'
+              % (key, n_trim))
 
     if key == 'gf':
         # Client instruction: the island is not wanted in the model. It IS in
