@@ -117,18 +117,25 @@ def client_rooms_gf(pieces):
     window. The tall bank is at the DINING end, not the window end. The south
     leg carries the sink and hob and is worktop throughout.
     """
-    TALL, NICHE = 1200.0, 1200.0
+    # One 600 mm door of full height at the dining end, per the client, then
+    # worktop up to the niche. The niche and the run beyond it keep the
+    # positions they already had, so only the tall bank changes.
+    TALL, NICHE, GAP = 600.0, 1200.0, 600.0
     out = []
     for b in pieces:
         if (abs(b[0] - 4640) < 60 and abs(b[1] - 13290) < 60
                 and abs(b[2] - 7540) < 60 and abs(b[3] - 17440) < 60):
             for r in b[4]:
                 if (r[2] - r[0]) < (r[3] - r[1]):        # the east leg
-                    a, c = r[1] + TALL, r[1] + TALL + NICHE
+                    a = r[1] + TALL
+                    n0 = a + GAP
+                    c = n0 + NICHE
                     out.append([r[0], r[1], r[2], a,
                                 [[r[0], r[1], r[2], a]], 'cupboard'])
-                    out.append([r[0], a, r[2], c,
-                                [[r[0], a, r[2], c]], 'niche'])
+                    out.append([r[0], a, r[2], n0,
+                                [[r[0], a, r[2], n0]], 'counter'])
+                    out.append([r[0], n0, r[2], c,
+                                [[r[0], n0, r[2], c]], 'niche'])
                     out.append([r[0], c, r[2], r[3],
                                 [[r[0], c, r[2], r[3]]], 'counter'])
                 else:
@@ -1193,13 +1200,16 @@ for key, (lo, hi, known_w) in PLANS.items():
     if key == 'ff':
         furn3d = client_rooms_ff(furn3d)
 
-    if key == 'gf':
-        furn3d = client_rooms_gf(furn3d)
-
+    # Clip BEFORE splitting a run into cupboard/niche/counter. Afterwards each
+    # piece is short enough that its depth is no longer the shorter side, and
+    # the clip starts eating the run instead: a 600 long unit came out 480.
     furn3d, n_trim = clip_to_walls(furn3d, walls)
     if n_trim:
         print('   %s: pulled %d furniture edges back off the wall lines'
               % (key, n_trim))
+
+    if key == 'gf':
+        furn3d = client_rooms_gf(furn3d)
 
     if key == 'gf':
         # Client instruction: the island is not wanted in the model. It IS in
@@ -1660,7 +1670,8 @@ function buildFurniture(g,P){
         box(r.w,carc,r.d,r.cx,0.09+carc/2,r.cz,M.oak);
         box(r.w,0.05,r.d,r.cx,TALLH-0.025,r.cz,M.oat);
         /* leaf joints, so a tall blank carcass does not read as a wall */
-        const run=(r.w>=r.d)?r.w:r.d, n=Math.max(2,Math.round(run/0.55));
+        /* one leaf per ~620 mm, and a single-door unit gets no joint at all */
+        const run=(r.w>=r.d)?r.w:r.d, n=Math.max(1,Math.round(run/0.62));
         for(let j=1;j<n;j++){
           const t=-run/2+run*j/n;
           box((r.w>=r.d)?0.016:r.w+0.006,carc-0.10,(r.w>=r.d)?r.d+0.006:0.016,
@@ -1748,7 +1759,7 @@ function buildFurniture(g,P){
       f.position.set(cx,0.34+Math.min(w,d)/2.4,cz); f.scale.y=1.25; g.add(f);
 
     }else{                                         /* chair: seat, legs, back */
-      const m=(i%5===0)?M.char:M.oak;
+      const m=M.oak;   /* all chairs in oak; a charcoal one in five read as a bug */
       box(sh(w,0.08),0.05,sh(d,0.08),cx,0.42,cz,M.linen);
       [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(q=>
         box(0.04,0.40,0.04,cx+q[0]*(w/2-0.06),0.20,cz+q[1]*(d/2-0.06),m));
