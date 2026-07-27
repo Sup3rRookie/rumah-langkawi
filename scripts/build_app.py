@@ -50,18 +50,25 @@ def client_rooms_gf(pieces):
     """Kitchen corrections from the client's interior renders.
 
     The extraction reads the kitchen as one L-shaped run at a single height.
-    The renders show it is two things: a floor-to-ceiling bank of oak units up
-    the east wall (fridge, oven, tall storage) and a worktop along the south
-    wall carrying the sink and hob. Splitting it is what makes the room read.
+    It is really three things. Along the east wall, only a two-door bank at the
+    SOUTH end is floor to ceiling; the north end of that same run is the wet
+    kitchen, next to the dining area, and stays at worktop height. The south
+    leg carries the sink and hob and is worktop too.
     """
+    TALL = 1200.0                       # two 600 mm doors, per the client
     out = []
     for b in pieces:
         if (abs(b[0] - 4640) < 60 and abs(b[1] - 13290) < 60
                 and abs(b[2] - 7540) < 60 and abs(b[3] - 17440) < 60):
             for r in b[4]:
-                tall = (r[2] - r[0]) < (r[3] - r[1])      # the east leg
-                out.append([r[0], r[1], r[2], r[3], [list(r)],
-                            'cupboard' if tall else 'counter'])
+                if (r[2] - r[0]) < (r[3] - r[1]):        # the east leg
+                    cut = r[3] - TALL
+                    out.append([r[0], r[1], r[2], cut,
+                                [[r[0], r[1], r[2], cut]], 'counter'])
+                    out.append([r[0], cut, r[2], r[3],
+                                [[r[0], cut, r[2], r[3]]], 'cupboard'])
+                else:
+                    out.append([r[0], r[1], r[2], r[3], [list(r)], 'counter'])
         else:
             out.append(b)
     return out
@@ -889,6 +896,7 @@ for key, (lo, hi, known_w) in PLANS.items():
     print('   %s: removed %d tread lines, %d stairwell partitions' % (key, n_t, n_i))
 
     stair = well = guard = stair_below = parapet = parapet_cut = None
+    screens = arch = None
     SL = None
     if key == 'gf':
         # Half-turn stair with a straight half-space landing, set out from the
@@ -1062,14 +1070,23 @@ for key, (lo, hi, known_w) in PLANS.items():
     print('   %s: %d of those are doors (matched to a swing arc)' % (key, n_door))
 
     if key == 'gf':
-        # Screen between the wet and dry kitchen. It is a 150 mm framed band at
-        # x 4490/4640 with panel lines at 4510 and 4620, and the drawing leaves
-        # a 1255 mm gap in it. Client wants a sliding leaf there, not a swing,
-        # so it is flagged rather than left to the arc matcher, which would
-        # never find it: a slider has no swing arc to match against.
-        wins.append({'o': 'v', 'c': 4565.0, 'a': 14715.0, 'b': 15970.0,
-                     't': 150.0, 'door': True, 'slide': True})
-        print('   gf: sliding door in the wet/dry screen, x 4565, z 14715..15970')
+        # The wet/dry kitchen divider. It is NOT a wall: the drawing shows a
+        # 150 mm framed band at x 4490/4640 with panel lines at 4510 and 4620
+        # inside it, which is how a glazed timber screen is drawn, and it
+        # breaks at z 14715..15970 for the arched opening. Rendering the four
+        # lines as walls turned the whole thing into a 3 m solid partition.
+        # Strip them and rebuild as a screen with an arch over the gap.
+        SCREEN_X = (4490.0, 4510.0, 4620.0, 4640.0)
+        n_before = len(walls)
+        walls = [w for w in walls
+                 if not (abs(w[0] - w[2]) < 1
+                         and any(abs(w[0] - c) < 4 for c in SCREEN_X)
+                         and min(w[1], w[3]) >= 13200 and max(w[1], w[3]) <= 17450)]
+        screens = [{'c': 4565.0, 'a': 13290.0, 'b': 14715.0, 't': 150.0},
+                   {'c': 4565.0, 'a': 15970.0, 'b': 17395.0, 't': 150.0}]
+        arch = {'c': 4565.0, 'a': 14715.0, 'b': 15970.0, 't': 150.0}
+        print('   gf: wet/dry screen, %d wall lines replaced by a glazed frame'
+              % (n_before - len(walls)))
 
     if key == 'ff':
         # Client asked for a door here. The drawing does not show one, so this
@@ -1158,7 +1175,8 @@ for key, (lo, hi, known_w) in PLANS.items():
     data[key] = dict(w=w_mm, d=d_mm,
                      walls=walls, furn=overlay, furn3d=furn3d, stair=stair,
                      well=well, guard=guard, align=align,
-                     stair_below=stair_below, wins=wins, parapet=parapet)
+                     stair_below=stair_below, wins=wins, parapet=parapet,
+                     screens=screens, arch=arch)
     from collections import Counter
     print(key, data[key]['w'], 'x', data[key]['d'], 'walls', len(walls),
           'furn', len(furn), '->', len(furn3d), 'pieces,',
@@ -1606,6 +1624,52 @@ function buildFurniture(g,P){
   });
 }
 
+/* Glazed timber screen dividing the wet and dry kitchen, with an arched
+   opening between its two panels. Runs on X only, which is all this house
+   needs; generalise if another screen turns up on a Z wall. */
+function buildScreen(g,P,ht){
+  const oakM=new THREE.MeshLambertMaterial({color:new THREE.Color("#c9a978")}),
+        glassM=new THREE.MeshLambertMaterial({color:new THREE.Color("#aebfc4"),
+          transparent:true,opacity:0.20,side:THREE.DoubleSide});
+  const px=v=>(v-P.w/2)/1000, pz=v=>(v-P.d/2)/1000;
+  const POST=0.06, RAIL=0.09, T=0.05;
+  const box=(w,h,d,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);
+    o.position.set(x,y,z); g.add(o);};
+
+  (P.screens||[]).forEach(s=>{
+    const x=px(s.c), z0=pz(s.a), z1=pz(s.b), L=z1-z0, zc=(z0+z1)/2;
+    box(T,RAIL,L,x,RAIL/2,zc,oakM);                       /* bottom rail */
+    box(T,RAIL,L,x,ht-RAIL/2,zc,oakM);                    /* head rail */
+    box(T,ht*0.012,L,x,ht*0.42,zc,oakM);                  /* mid rail */
+    box(0.019,ht-2*RAIL,L,x,ht/2,zc,glassM);              /* glazing */
+    const n=Math.max(2,Math.round(L/0.62));               /* mullions */
+    for(let i=0;i<=n;i++)
+      box(T,ht-2*RAIL,POST,x,ht/2,z0+L*(i/n),oakM);
+  });
+
+  if(P.arch){
+    const a=P.arch, x=px(a.c), z0=pz(a.a), z1=pz(a.b), L=z1-z0, zc=(z0+z1)/2;
+    const r=L/2, springs=ht-0.30-r;                       /* springing line */
+    box(T,0.09,L,x,ht-0.045,zc,oakM);                     /* head over the arch */
+    /* the arch itself, as a ring of short chords following the curve */
+    const seg=16;
+    for(let i=0;i<seg;i++){
+      const t0=Math.PI*(i/seg), t1=Math.PI*((i+1)/seg);
+      const p0=[zc-r*Math.cos(t0),springs+r*Math.sin(t0)],
+            p1=[zc-r*Math.cos(t1),springs+r*Math.sin(t1)];
+      const dz=p1[0]-p0[0], dy=p1[1]-p0[1], len=Math.hypot(dz,dy);
+      const o=new THREE.Mesh(new THREE.BoxGeometry(T,0.075,len),oakM);
+      o.position.set(x,(p0[1]+p1[1])/2,(p0[0]+p1[0])/2);
+      o.rotation.x=-Math.atan2(dy,dz)+Math.PI/2;
+      g.add(o);
+    }
+    /* jambs from the floor up to where the arch springs */
+    [z0,z1].forEach(zz=>box(T,springs,0.075,x,springs/2,zz,oakM));
+    /* spandrels either side of the arch, above the springing */
+    box(T,ht-0.09-springs-r,L,x,(springs+r+ht-0.09)/2,zc,oakM);
+  }
+}
+
 /* Guarding around a floor opening — same balustrade language as the stair,
    but level. Used on the first floor where the slab is cut for the stairwell. */
 function buildGuard(g,P){
@@ -1676,6 +1740,7 @@ function build(){
     const glassM=new THREE.MeshLambertMaterial({color:new THREE.Color("#9fb4bd"),
       transparent:true,opacity:0.34});
     const frameM=new THREE.MeshLambertMaterial({color:new THREE.Color("#6b6257")});
+    const slatM=new THREE.MeshLambertMaterial({color:new THREE.Color("#c9a978")});
     P.walls.forEach((w,i)=>{
       const horiz=Math.abs(w[1]-w[3])<1, vert=Math.abs(w[0]-w[2])<1;
       /* window spans that sit on this wall, in plan mm along its own axis */
@@ -1729,14 +1794,20 @@ function build(){
           piece(cut[1]-45,cut[1],0,dh,frameM,false);
           piece(cut[0],cut[1],dh-0.05,dh,frameM,false);
           if(cut[4]){
-            /* sliding leaf, parked over about half the opening so the doorway
-               still reads as usable. Glazed with a timber frame, on a track. */
-            const mid=cut[0]+(cut[1]-cut[0])*0.55;
-            piece(cut[0]+45,mid,0.04,dh-0.07,glassM,false);
-            piece(cut[0]+45,cut[0]+100,0.04,dh-0.07,frameM,false);
-            piece(mid-55,mid,0.04,dh-0.07,frameM,false);
-            piece(cut[0]+45,mid,0.04,0.10,frameM,false);
-            piece(cut[0],cut[1],dh+0.02,dh+0.07,frameM,false);   /* track */
+            /* Timber slat sliding screen, per the dry kitchen render: vertical
+               oak fins in a frame, on a track. Parked over about half the
+               opening so the doorway still reads as usable. */
+            const mid=cut[0]+(cut[1]-cut[0])*0.55, a0=cut[0]+45;
+            const nsl=Math.max(3,Math.round((mid-a0)/98));
+            for(let q2=0;q2<nsl;q2++){
+              const s0=a0+(mid-a0)*(q2/nsl);
+              piece(s0,s0+54,0.12,dh-0.14,slatM,false);
+            }
+            piece(a0,mid,0.04,0.12,slatM,false);              /* bottom rail */
+            piece(a0,mid,dh-0.14,dh-0.06,slatM,false);        /* top rail */
+            piece(a0,a0+40,0.04,dh-0.06,slatM,false);         /* stiles */
+            piece(mid-40,mid,0.04,dh-0.06,slatM,false);
+            piece(cut[0],cut[1],dh+0.02,dh+0.07,frameM,false);/* track */
           }
           at=cut[1];
           return;
@@ -1779,6 +1850,7 @@ function build(){
       sg.add(patch);
       buildStair(sg,{w:P.w,d:P.d,stair:P.stair_below},H.gf);
     }
+    if(P.screens||P.arch) buildScreen(g,P,ht);
     if(P.guard) buildGuard(g,P);
     /* balcony balustrade: glazed, at the same waist height as the solid
        parapet it replaces. Shoe rail, glass infill, timber handrail capping
