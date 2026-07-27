@@ -1017,14 +1017,24 @@ for key, (lo, hi, known_w) in PLANS.items():
             else:
                 a0, a1, across = ax, ax + aw, abs(az - q['c'])
                 reach = ah
+            # A door leaf is never under about 650 mm. Bathroom windows very
+            # often are, and they sit in a wall band exactly like a leaf does.
+            if span < 650:
+                continue
             overlap = min(a1, q['b']) - max(a0, q['a'])
             if overlap < 0.35 * min(a1 - a0, span):
                 continue
-            if abs(reach - span) > max(reach, span) * 0.45:
+            # The arc is struck with the leaf as its radius, so it should match
+            # the opening width closely. A loose tolerance here let a 651 mm arc
+            # claim a 1090 mm opening.
+            if abs(reach - span) > max(reach, span) * 0.25:
                 continue
-            # floor of 1400: the arc is drawn from the leaf, which for a narrow
-            # door sits further from the wall centreline than its own radius
-            if across < max(1400.0, 1.6 * max(reach, span)):
+            # And it must be hinged ON this wall: the arc's bounding box has one
+            # edge at the wall, so it starts either at the centreline or one
+            # radius from it. Anything between means the arc belongs elsewhere.
+            # Without this an arc 1517 mm away was turning a WC window into a
+            # doorway.
+            if across < 250 or abs(across - reach) < 250:
                 q['door'] = True
                 n_door += 1
                 break
@@ -1040,12 +1050,15 @@ for key, (lo, hi, known_w) in PLANS.items():
                      't': 155.0, 'door': True})
         print('   ff: added a 900 mm door at x 5388, z 9900..10800 (client)')
 
-    # NOTE: an earlier version patched a wall across x 2805..3875 at z 13125 on
-    # the first floor, to close what looked like a hole in the tatami bedroom.
-    # It is not a hole. The drawing breaks the wall there because it is a
-    # DOORWAY, drawn with the leaf standing open. Closing it walled up a door.
-    # Left here as a warning: a break in a wall face is more often an opening
-    # than a defect in the extraction.
+    if key == 'ff':
+        # The drawing breaks the south wall of the tatami bedroom around a
+        # stippled box at x 2918..3696, leaving a 1070 mm hole in the model.
+        # Client confirmed it is plain wall, so close it on both faces.
+        # Added after openings() on purpose: the two faces are 160 mm apart,
+        # which is inside the window band, so patching earlier would have the
+        # extractor invent a window in the wall we just built.
+        walls += [[2805, 13125, 3875, 13125], [2555, 13285, 3725, 13285]]
+        print('   ff: closed the tatami bedroom wall break (client: plain wall)')
     for q in wins:
         print('      %s wall at %-7.0f  %6.0f..%-6.0f  width %5.0f  thk %3.0f'
               % (q['o'], q['c'], q['a'], q['b'], q['b'] - q['a'], q['t']))
