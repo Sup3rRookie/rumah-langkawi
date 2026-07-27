@@ -46,14 +46,21 @@ def client_rooms_ff(pieces):
     return out
 
 
+FITTED = ('counter', 'cupboard', 'niche')
+
+
 def clip_to_walls(pieces, walls, tol=170.0):
-    """Pull furniture back off the wall lines it overshoots.
+    """Pull FITTED joinery back off the wall lines it overshoots.
 
     Cabinets are drawn to the wall's structural line rather than its inner
     face, so a 600 mm unit against a 150 mm wall comes out 650 deep and pokes
     through the wall plane in 3D. Any edge that crosses a wall line by less
     than `tol` is trimmed back to it. Bigger overlaps are left alone: those are
     not drafting overshoot, they are a piece genuinely spanning an opening.
+
+    Only fitted runs. Applying this to everything chopped free-standing pieces
+    that merely straddle a wall centreline: dining chairs came out 455 x 115
+    and a side table lost half its width.
     """
     vs = sorted({w[0] for w in walls if abs(w[0] - w[2]) < 1})
     hs = sorted({w[1] for w in walls if abs(w[1] - w[3]) < 1})
@@ -82,6 +89,9 @@ def clip_to_walls(pieces, walls, tol=170.0):
 
     out, n_trim = [], 0
     for b in pieces:
+        if b[-1] not in FITTED:
+            out.append(b)
+            continue
         rects = []
         for r in b[4]:
             t = trim(r)
