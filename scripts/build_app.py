@@ -115,6 +115,8 @@ def openings(walls):
 
 
 CELL = 50.0          # footprint raster, mm per cell
+BALCONY = (895, 13290, 4710, 17375)     # ff balcony, in plan mm
+BALCONY_DROP = ('chair',)               # tiers the client wants left out of it
 
 
 def _join(furn, idxs, tol):
@@ -151,6 +153,69 @@ def _join(furn, idxs, tol):
     for i in idxs:
         g.setdefault(find(i), []).append(i)
     return list(g.values())
+
+
+def _chains(tiny, anchors, minlen=400.0, minside=250.0, tol=15.0):
+    """Keep short chords only when they chain into a real outline.
+
+    An outline traces its own bounding box once or twice. The scribbles that
+    draw hanging clothes on a wardrobe rail put 20 m of line into an 85 x 425 mm
+    box, so length alone lets them through and they swamp the payload. Width and
+    the length-to-perimeter ratio are what tell a shape from a scribble.
+
+    `anchors` are the chords already long enough to keep. They take part in the
+    chaining but are not returned: one drawn outline switches between long and
+    short chords as its curvature changes, and without them a single shape reads
+    as several disconnected arcs, none of them wide enough to survive.
+    """
+    segs = tiny + anchors
+    n = len(segs)
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    grid = {}
+    for i, s in enumerate(segs):
+        for p in ((s[0], s[1]), (s[2], s[3])):
+            grid.setdefault((int(p[0] // tol), int(p[1] // tol)), []).append(i)
+    for i, s in enumerate(segs):
+        for p in ((s[0], s[1]), (s[2], s[3])):
+            gx, gy = int(p[0] // tol), int(p[1] // tol)
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for j in grid.get((gx + dx, gy + dy), ()):
+                        if j == i:
+                            continue
+                        t = segs[j]
+                        for q in ((t[0], t[1]), (t[2], t[3])):
+                            if math.dist(p, q) <= tol:
+                                ra, rb = find(i), find(j)
+                                if ra != rb:
+                                    parent[ra] = rb
+    run = {}
+    for i, s in enumerate(segs):
+        r = find(i)
+        c = run.setdefault(r, [0.0, [], [1e9, 1e9, -1e9, -1e9]])
+        c[0] += math.dist((s[0], s[1]), (s[2], s[3]))
+        if i < len(tiny):
+            c[1].append(s)
+        c[2][0] = min(c[2][0], s[0], s[2])
+        c[2][1] = min(c[2][1], s[1], s[3])
+        c[2][2] = max(c[2][2], s[0], s[2])
+        c[2][3] = max(c[2][3], s[1], s[3])
+    out = []
+    for total, ss, b in run.values():
+        w, d = b[2] - b[0], b[3] - b[1]
+        if total < minlen or min(w, d) < minside:
+            continue
+        if total > 4.0 * 2 * (w + d):
+            continue
+        out += ss
+    return out
 
 
 def _bbox(furn, idxs):
@@ -351,13 +416,28 @@ def massing(furn, n_line, keepout=None, tol=30.0):
     def ar(a):
         return max(1.0, (a[2] - a[0]) * (a[3] - a[1]))
 
+    def curvy(g):
+        """a traced outline: many chords, all of them short"""
+        if len(g) < 20:
+            return False
+        tot = sum(math.dist((furn[i][0], furn[i][1]), (furn[i][2], furn[i][3])) for i in g)
+        return tot / len(g) < 120
+
+    curved = [curvy(g) for g in groups]
     merged = True
     while merged:
         merged = False
         for i in range(len(groups)):
             for j in range(len(groups) - 1, i, -1):
-                if ov(boxes[i], boxes[j]) > 0.45 * min(ar(boxes[i]), ar(boxes[j])):
+                # A curve switches between long and short chords as it bends, so
+                # one drawn shape can reach the raster as two arcs that overlap
+                # without either containing the other. Nothing else in the plan
+                # is two overlapping runs of short chords, so they can be joined
+                # on much less overlap than a carcass and its hatching need.
+                need = 0.20 if (curved[i] and curved[j]) else 0.45
+                if ov(boxes[i], boxes[j]) > need * min(ar(boxes[i]), ar(boxes[j])):
                     groups[i] += groups.pop(j)
+                    curved[i] = curved[i] or curved.pop(j)
                     boxes.pop(j)
                     boxes[i] = _bbox(furn, groups[i])
                     merged = True
@@ -365,24 +445,38 @@ def massing(furn, n_line, keepout=None, tol=30.0):
                 break
 
     def module_run(a, b):
-        """Are these two blocks of one modular piece butted together?
+        """Are these two blocks arms of one modular piece?
 
-        A sectional sofa is drawn as separate ~1 m cushion blocks and nothing
-        about one block says sofa. Blocks of the same size sitting flush against
-        each other are one piece. A chair pushed against a dining table also
-        touches, so similar area and flush edges do the separating: 0.2 m2
-        against 2.4 m2 is furniture beside furniture, not a run.
+        A sectional sofa is drawn as separate cushion blocks and nothing about
+        one block says sofa. Worse, where the L turns the plan leaves the join
+        open — the west sofa's right face is only drawn below the corner — so
+        the arm cannot even flood-fill closed until the leg is merged in.
+
+        Depth is the test that works. Two arms of one piece are the same depth
+        and butt flush at one end; a chair pushed against a dining table is 450
+        against 1050 and fails on that alone. Length is free to differ, because
+        an L's long arm runs past its short one by definition.
         """
-        aa, ab = ar(a), ar(b)
-        if not (0.6e6 <= aa <= 2.5e6 and 0.6e6 <= ab <= 2.5e6):
+        aw, ad = a[2] - a[0], a[3] - a[1]
+        bw, bd = b[2] - b[0], b[3] - b[1]
+        da, db = min(aw, ad), min(bw, bd)
+        if not (400 <= da <= 1400 and 400 <= db <= 1400):
             return False
-        if max(aa, ab) / min(aa, ab) > 1.6:
+        if max(da, db) / min(da, db) > 1.35:
             return False
-        if (max(a[0] - b[2], b[0] - a[2]) <= 60
-                and abs(a[1] - b[1]) <= 120 and abs(a[3] - b[3]) <= 120):
-            return True
-        return (max(a[1] - b[3], b[1] - a[3]) <= 60
-                and abs(a[0] - b[0]) <= 120 and abs(a[2] - b[2]) <= 120)
+        if ar(a) > 6.0e6 or ar(b) > 6.0e6:
+            return False
+        if max(a[0] - b[2], b[0] - a[2]) <= 60:          # side by side in x
+            lap = min(a[3], b[3]) - max(a[1], b[1])
+            if (lap >= 0.7 * min(ad, bd)
+                    and (abs(a[1] - b[1]) <= 120 or abs(a[3] - b[3]) <= 120)):
+                return True
+        if max(a[1] - b[3], b[1] - a[3]) <= 60:          # end to end in z
+            lap = min(a[2], b[2]) - max(a[0], b[0])
+            if (lap >= 0.7 * min(aw, bw)
+                    and (abs(a[0] - b[0]) <= 120 or abs(a[2] - b[2]) <= 120)):
+                return True
+        return False
 
     # Union-find on the original boxes, not one merge at a time: a three-block
     # run has to stay a run, and by the third block a growing box no longer
@@ -405,21 +499,15 @@ def massing(furn, n_line, keepout=None, tol=30.0):
     for i in range(len(groups)):
         runs.setdefault(root(i), []).extend(groups[i])
     groups = list(runs.values())
+
     import os
-    if os.environ.get('MASSDEBUG'):
-        z = [float(v) for v in os.environ['MASSDEBUG'].split(',')]
-        for g in groups:
-            b = _bbox(furn, g)
-            if z[0] <= b[0] and b[2] <= z[2] and z[1] <= b[1] and b[3] <= z[3]:
-                print('   GROUP %6.0f %6.0f %6.0f %6.0f  %5.0fx%-5.0f segs=%d'
-                      % (b[0], b[1], b[2], b[3], b[2] - b[0], b[3] - b[1], len(g)))
-                if len(g) < 20:
-                    for i in g:
-                        print('       seg %6.0f %6.0f %6.0f %6.0f' % tuple(furn[i]))
+    _dbg = [float(v) for v in os.environ['MASSDEBUG'].split(',')] if os.environ.get('MASSDEBUG') else None
 
     pieces = []
     for g in groups:
         b = _bbox(furn, g)
+        if _dbg and _dbg[0] <= b[0] and b[2] <= _dbg[2] and _dbg[1] <= b[1] and b[3] <= _dbg[3]:
+            print('   GROUP %6.0f %6.0f %6.0f %6.0f segs=%d' % (b[0], b[1], b[2], b[3], len(g)))
         # detail lines, hatching, noise. The min-side test drops leader lines and
         # dimension ticks, which pass on area alone and then extrude as fins.
         if ((b[2] - b[0]) * (b[3] - b[1]) < 0.15e6
@@ -529,19 +617,36 @@ def massing(furn, n_line, keepout=None, tol=30.0):
     # A coffee table is a low slab parked in front of seating. Its own size says
     # nothing — at 0.7 x 1.2 m it reads as cabinetry — but its position does:
     # nothing else of that size sits against a sofa. Holding it to oblong is what
-    # keeps the armchair beside the same sofa out, that being near-square.
+    # keeps the armchair beside the same sofa out, that being near-square. A
+    # square one is only accepted if it also sits in the run between the sofa and
+    # the console facing it, which is the arrangement the room is set out for.
     sofas = [p for p in out if p[5] == 'sofa']
+    counters = [p for p in out if p[5] == 'counter']
+
+    def between(p, s):
+        """does p sit in the run between sofa s and a console facing it?"""
+        cx, cz = (p[0] + p[2]) / 2, (p[1] + p[3]) / 2
+        for c in counters:
+            if (min(s[2], c[2]) < cx < max(s[0], c[0])
+                    and max(s[1], c[1]) <= cz <= min(s[3], c[3])):
+                return True
+            if (min(s[3], c[3]) < cz < max(s[1], c[1])
+                    and max(s[0], c[0]) <= cx <= min(s[2], c[2])):
+                return True
+        return False
+
     for p in out:
         if p[5] not in ('table', 'counter', 'chair', 'round'):
             continue
         if not 0.30 <= p[6] <= 1.6:
             continue
         w, d = p[2] - p[0], p[3] - p[1]
-        if max(w, d) / max(1.0, min(w, d)) < 1.4:
-            continue
+        oblong = max(w, d) / max(1.0, min(w, d)) >= 1.4
         for s in sofas:
-            if (s[0] - 1200 <= p[2] and p[0] <= s[2] + 1200
+            if not (s[0] - 1200 <= p[2] and p[0] <= s[2] + 1200
                     and s[1] - 1200 <= p[3] and p[1] <= s[3] + 1200):
+                continue
+            if oblong or between(p, s):
                 p[5] = 'coffee'
                 break
     return [p[:6] for p in out]
@@ -596,16 +701,27 @@ for key, (lo, hi, known_w) in PLANS.items():
         if abs(a[0] - b[0]) > 1 and abs(a[1] - b[1]) > 1:
             walls.append([a[0], a[1], b[0], b[1]])
 
-    furn = []
+    furn, tiny = [], []
     for l in rl:
         a, b = P(l['x0'], l['top']), P(l['x1'], l['bottom'])
-        if math.dist(a, b) > 60:
+        d = math.dist(a, b)
+        if d > 60:
             furn.append([a[0], a[1], b[0], b[1]])
+        elif d > 5:
+            tiny.append([a[0], a[1], b[0], b[1]])
     for c in rc:
         p = [P(*q) for q in c['pts']]
         for i in range(len(p) - 1):
-            if math.dist(p[i], p[i + 1]) > 60:
+            d = math.dist(p[i], p[i + 1])
+            if d > 60:
                 furn.append([p[i][0], p[i][1], p[i + 1][0], p[i + 1][1]])
+            elif d > 5:
+                tiny.append([p[i][0], p[i][1], p[i + 1][0], p[i + 1][1]])
+    # Smooth outlines are drawn as chains of 20-40 mm chords, split across both
+    # lines and curves. Judged one chord at a time they read as noise and were
+    # thrown away, which is why the round coffee table never reached the model.
+    # Judged as a chain they are unmistakable, and a hanger tick still is not.
+    furn += _chains(tiny, furn)
     # Whole pieces are drawn as PDF rects, not lines: the dining table, the
     # wardrobe runs, most bed carcasses. Read as lines only, they were missing
     # from the model entirely, which is why the dining set was chairs and air.
@@ -792,6 +908,19 @@ for key, (lo, hi, known_w) in PLANS.items():
     elif well:
         keepout = well
     furn3d = massing(furn, n_line, keepout)
+
+    # Client instruction about one room, not an extraction problem, so it reads
+    # as one. The balcony is to be furnished with the sofa alone: the armchairs
+    # and the side table ARE drawn in the plan and come through correctly, and
+    # are being suppressed on request. Widen BALCONY_DROP to strip it further.
+    if key == 'ff':
+        n_before = len(furn3d)
+        furn3d = [f for f in furn3d
+                  if not (f[5] in BALCONY_DROP
+                          and BALCONY[0] <= (f[0] + f[2]) / 2 <= BALCONY[2]
+                          and BALCONY[1] <= (f[1] + f[3]) / 2 <= BALCONY[3])]
+        print('   %s: %d balcony seats suppressed at the client request'
+              % (key, n_before - len(furn3d)))
     w_mm, d_mm = round((max(xs) - x0) * scale), round((max(ys) - y0) * scale)
 
     # Each plan is centred on its own width, but the FF plan is 820 mm west of
