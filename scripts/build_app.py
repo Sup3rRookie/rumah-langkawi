@@ -631,6 +631,39 @@ def massing(furn, n_line, keepout=None, scribble=(), tol=30.0):
         if near >= 4:
             p[5] = 'table'
 
+    # What separates a wardrobe from a kitchen run is not its size, it is that
+    # the plan draws the clothes hanging in it: a dense scribble of 20-40 mm
+    # strokes, hundreds of them, inside the carcass outline. The kitchen has a
+    # sink and a hob drawn in and nothing like that. So the tall tier is decided
+    # by what is drawn inside the piece, not by guessing from its proportions.
+    for p in out:
+        if p[5] != 'counter':
+            continue
+        n = sum(1 for s in scribble
+                if p[0] <= (s[0] + s[2]) / 2 <= p[2] and p[1] <= (s[1] + s[3]) / 2 <= p[3])
+        if n >= 40:
+            p[5] = 'cupboard'
+
+    # Bedroom fittings read off the bed they serve. A small piece pulled up to
+    # the head of a bed is a bedside table, and a shallow run across its foot is
+    # a bench: both are drawn as plain rectangles that say nothing on their own.
+    beds = [p for p in out if p[5] == 'bed']
+
+    def near(p, q, gap):
+        return (q[0] - gap <= p[2] and p[0] <= q[2] + gap
+                and q[1] - gap <= p[3] and p[1] <= q[3] + gap)
+
+    for p in out:
+        w, d = p[2] - p[0], p[3] - p[1]
+        for q in beds:
+            if not near(p, q, 700):
+                continue
+            if p[5] in ('chair', 'round') and p[6] <= 0.40:
+                p[5] = 'round'
+            elif p[5] == 'counter' and min(w, d) <= 700 and max(w, d) <= 2500:
+                p[5] = 'bench'
+            break
+
     # A coffee table is a low slab parked in front of seating. Its own size says
     # nothing — at 0.7 x 1.2 m it reads as cabinetry — but its position does:
     # nothing else of that size sits against a sofa. Holding it to oblong is what
@@ -929,7 +962,7 @@ for key, (lo, hi, known_w) in PLANS.items():
         keepout = [stair['x_low'], stair['fa'][0], stair['x_east'], stair['fb'][1]]
     elif well:
         keepout = well
-    furn3d = massing(furn, n_line, keepout)
+    furn3d = massing(furn, n_line, keepout, tiny)
 
     # Client instruction about one room, not an extraction problem, so it reads
     # as one. The balcony is to be furnished with the sofa alone: the armchairs
@@ -955,8 +988,13 @@ for key, (lo, hi, known_w) in PLANS.items():
     if key == 'ff':
         align = -(820 - w_mm / 2 + data['gf']['w'] / 2)
 
+    # The 2D overlay only has to read as linework at plan scale. Shipping every
+    # curve vertex put 400 KB into the payload for detail nothing can show, so
+    # it goes out decimated; massing above still works off the full set.
+    overlay = [[round(s[0]), round(s[1]), round(s[2]), round(s[3])] for s in furn
+               if math.dist((s[0], s[1]), (s[2], s[3])) >= 40]
     data[key] = dict(w=w_mm, d=d_mm,
-                     walls=walls, furn=furn, furn3d=furn3d, stair=stair,
+                     walls=walls, furn=overlay, furn3d=furn3d, stair=stair,
                      well=well, guard=guard, align=align,
                      stair_below=stair_below, wins=wins, parapet=parapet)
     from collections import Counter
@@ -1231,6 +1269,28 @@ function buildFurniture(g,P){
         box(r.w,0.04,r.d,r.cx,0.84,r.cz,M.oat);
       });
 
+    }else if(tier==="cupboard"){    /* full-height wardrobe: plinth, carcass,
+                                       door leaves, cornice. At counter height a
+                                       wardrobe reads as a kitchen unit. */
+      R.forEach(r=>{
+        box(sh(r.w,0.06),0.09,sh(r.d,0.06),r.cx,0.045,r.cz,M.char);
+        box(r.w,1.93,r.d,r.cx,1.055,r.cz,M.oak);
+        box(r.w,0.05,r.d,r.cx,2.045,r.cz,M.oat);
+        /* leaf joints, so 2.1 m of carcass does not read as a blank wall */
+        const run=(r.w>=r.d)?r.w:r.d, n=Math.max(2,Math.round(run/0.55));
+        for(let j=1;j<n;j++){
+          const t=-run/2+run*j/n;
+          box((r.w>=r.d)?0.016:r.w+0.006,1.83,(r.w>=r.d)?r.d+0.006:0.016,
+              r.cx+((r.w>=r.d)?t:0),1.055,r.cz+((r.w>=r.d)?0:t),M.oakDark);
+        }
+      });
+
+    }else if(tier==="bench"){       /* upholstered, backless, foot of the bed */
+      R.forEach(r=>{
+        box(sh(r.w,0.16),0.30,sh(r.d,0.16),r.cx,0.15,r.cz,M.oakDark);
+        box(r.w,0.14,r.d,r.cx,0.37,r.cz,M.linen);
+      });
+
     }else if(tier==="sofa"){        /* seat on a recessed oak plinth, back, arms */
       R.forEach(r=>{
         box(sh(r.w,0.10),0.06,sh(r.d,0.10),r.cx,0.09,r.cz,M.oakDark);
@@ -1286,9 +1346,22 @@ function buildFurniture(g,P){
       box(sh(w,0.08),0.05,sh(d,0.08),cx,0.42,cz,M.linen);
       [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(q=>
         box(0.04,0.40,0.04,cx+q[0]*(w/2-0.06),0.20,cz+q[1]*(d/2-0.06),m));
-      box((along==="x")?w:0.06,0.38,(along==="x")?0.06:d,
-          (along==="x")?cx:cx-(w/2-0.04),0.63,
-          (along==="x")?cz-(d/2-0.04):cz,m);
+      /* A chair belongs to whatever it is drawn around, so put its back on the
+         side away from that and the group faces itself. The piece's own long
+         axis, which is what this used before, says nothing about which way it
+         is turned and left the dining chairs all facing the same way. */
+      let bx=0, bz=-1;
+      if(along!=="x"){ bx=-1; bz=0; }
+      let best=6.25;
+      FOCUS.forEach(f=>{
+        const dd=(f.x-cx)*(f.x-cx)+(f.z-cz)*(f.z-cz);
+        if(dd>=best) return;
+        best=dd;
+        if(Math.abs(f.x-cx)>=Math.abs(f.z-cz)){ bx=(f.x>cx)?-1:1; bz=0; }
+        else { bx=0; bz=(f.z>cz)?-1:1; }
+      });
+      box(bx?0.06:w,0.38,bx?d:0.06,
+          cx+bx*(w/2-0.04),0.63,cz+bz*(d/2-0.04),m);
     }
   });
 }
