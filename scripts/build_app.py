@@ -50,23 +50,26 @@ def client_rooms_gf(pieces):
     """Kitchen corrections from the client's interior renders.
 
     The extraction reads the kitchen as one L-shaped run at a single height.
-    It is really three things. Along the east wall, only a two-door bank at the
-    SOUTH end is floor to ceiling; the north end of that same run is the wet
-    kitchen, next to the dining area, and stays at worktop height. The south
-    leg carries the sink and hob and is worktop too.
+    Along the east wall, reading from the dining end towards the window, the
+    render gives three things: a two-door full-height bank, then the arched
+    niche with the sink and its lit shelves, then worktop running on to the
+    window. The tall bank is at the DINING end, not the window end. The south
+    leg carries the sink and hob and is worktop throughout.
     """
-    TALL = 1200.0                       # two 600 mm doors, per the client
+    TALL, NICHE = 1200.0, 1200.0
     out = []
     for b in pieces:
         if (abs(b[0] - 4640) < 60 and abs(b[1] - 13290) < 60
                 and abs(b[2] - 7540) < 60 and abs(b[3] - 17440) < 60):
             for r in b[4]:
                 if (r[2] - r[0]) < (r[3] - r[1]):        # the east leg
-                    cut = r[3] - TALL
-                    out.append([r[0], r[1], r[2], cut,
-                                [[r[0], r[1], r[2], cut]], 'counter'])
-                    out.append([r[0], cut, r[2], r[3],
-                                [[r[0], cut, r[2], r[3]]], 'cupboard'])
+                    a, c = r[1] + TALL, r[1] + TALL + NICHE
+                    out.append([r[0], r[1], r[2], a,
+                                [[r[0], r[1], r[2], a]], 'cupboard'])
+                    out.append([r[0], a, r[2], c,
+                                [[r[0], a, r[2], c]], 'niche'])
+                    out.append([r[0], c, r[2], r[3],
+                                [[r[0], c, r[2], r[3]]], 'counter'])
                 else:
                     out.append([r[0], r[1], r[2], r[3], [list(r)], 'counter'])
         else:
@@ -1479,6 +1482,47 @@ function buildFurniture(g,P){
     o.position.set(x,y,z); g.add(o);};
   const cyl=(r,h,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.CylinderGeometry(r,r*0.82,h,14),m);
     o.position.set(x,y,z); g.add(o);};
+
+  /* Which way a run faces: away from the wall it stands against, taken as
+     away from the nearer edge of the plan. ax true means the run lies along
+     X, so it opens in Z. */
+  const front=r=>{
+    const ax=r.w>=r.d;
+    return ax ? {ax:true, x:0, z:(r.cz>0?1:-1), half:r.d/2}
+              : {ax:false,x:(r.cx>0?1:-1), z:0, half:r.w/2};
+  };
+  /* Warm strip under a worktop or shelf, plus two soft bloom shells. Shares
+     glowMats with the stair, so one slider drives every LED in the house. */
+  const ledM=new THREE.MeshBasicMaterial({color:new THREE.Color("#ffb14a")});
+  const kGlow=[0.26,0.13].map(o=>{
+    const m=new THREE.MeshBasicMaterial({color:new THREE.Color("#ff8f22"),
+      transparent:true,opacity:o,blending:THREE.AdditiveBlending,
+      depthWrite:false});
+    glowMats.push({mat:m,base:o}); return m;});
+  const strip=(r,s,y,len,off)=>{
+    const w=s.ax?len:0.012, d=s.ax?0.012:len;
+    const x=r.cx+s.x*(s.half-off), z=r.cz+s.z*(s.half-off);
+    box(w,0.014,d,x,y,z,ledM);
+    [[0.07,1.6],[0.15,2.6]].forEach((q,qi)=>
+      box(s.ax?len:q[0],q[0],s.ax?q[0]:len,x,y-q[0]*0.35,z,kGlow[qi]));
+  };
+  const underLED=(r,y)=>{const s=front(r); strip(r,s,y,(s.ax?r.w:r.d)*0.9,0.03);};
+  const shelfLED=(r,s,y)=>strip(r,s,y-0.03,(s.ax?r.w:r.d)*0.8,0.30);
+  /* arch head over a recess, as short chords following the curve */
+  const arcRing=(r,s,run,top,th,m)=>{
+    const rad=run/2, spring=top-rad, seg=14;
+    for(let i=0;i<seg;i++){
+      const t0=Math.PI*(i/seg), t1=Math.PI*((i+1)/seg);
+      const u0=-rad*Math.cos(t0), v0=spring+rad*Math.sin(t0);
+      const u1=-rad*Math.cos(t1), v1=spring+rad*Math.sin(t1);
+      const du=u1-u0, dv=v1-v0, L=Math.hypot(du,dv);
+      const o=new THREE.Mesh(new THREE.BoxGeometry(s.ax?L:th,th,s.ax?th:L),m);
+      o.position.set(r.cx+(s.ax?(u0+u1)/2:-s.x*0.08),(v0+v1)/2,
+                     r.cz+(s.ax?-s.z*0.08:(u0+u1)/2));
+      if(s.ax) o.rotation.z=Math.atan2(dv,du); else o.rotation.x=-Math.atan2(dv,du);
+      g.add(o);
+    }
+  };
   /* what a seating group is arranged around: the table or sofa at its centre */
   const FOCUS=P.furn3d.filter(b=>b[5]==="sofa"||b[5]==="table"||b[5]==="coffee"
                                  ||b[5]==="coffeeround"||b[5]==="bed"||b[5]==="desk")
@@ -1502,6 +1546,32 @@ function buildFurniture(g,P){
         box(sh(r.w,0.10),0.10,sh(r.d,0.10),r.cx,0.05,r.cz,M.char);
         box(r.w,0.72,r.d,r.cx,0.46,r.cz,M.oak);
         box(r.w,0.04,r.d,r.cx,0.84,r.cz,M.oat);
+        underLED(r,0.80);             /* wash under the worktop, as rendered */
+      });
+
+    }else if(tier==="niche"){   /* arched recess: sink, lit shelves, base units */
+      R.forEach(r=>{
+        const run=(r.w>=r.d)?r.w:r.d, fw=(r.w>=r.d)?0.06:r.d, fd=(r.w>=r.d)?r.w:0.06;
+        const s=front(r), back=0.16;
+        box(sh(r.w,0.10),0.10,sh(r.d,0.10),r.cx,0.05,r.cz,M.char);
+        box(r.w,0.72,r.d,r.cx,0.46,r.cz,M.oak);
+        box(r.w,0.04,r.d,r.cx,0.84,r.cz,M.oat);
+        underLED(r,0.80);
+        /* recessed stone back, set behind the face of the run */
+        box(r.w-(s.ax?back:0),1.45,r.d-(s.ax?0:back),
+            r.cx-s.x*back/2,1.61,r.cz-s.z*back/2,M.oat);
+        /* oak reveals framing the recess, and the arch head over it */
+        [-1,1].forEach(k=>box(s.ax?r.w:0.09,1.45,s.ax?0.09:r.d,
+          r.cx+(s.ax?0:k*(run/2-0.045)),1.61,r.cz+(s.ax?k*(run/2-0.045):0),M.oak));
+        arcRing(r,s,run,2.10,0.075,M.oak);
+        /* two shelves, each with its own strip washing the stone behind */
+        [1.18,1.52].forEach(y=>{
+          box(s.ax?r.w*0.86:0.26,0.035,s.ax?0.26:r.d*0.86,
+              r.cx-s.x*0.13,y,r.cz-s.z*0.13,M.oak);
+          shelfLED(r,s,y);
+        });
+        /* the tap */
+        box(0.035,0.28,0.035,r.cx-s.x*0.16,1.00,r.cz-s.z*0.16,M.char);
       });
 
     }else if(tier==="cupboard"){    /* full-height wardrobe: plinth, carcass,
