@@ -1284,7 +1284,9 @@ function buildStair(g,P,ht){
   const S=P.stair;
   const px=v=>(v-P.w/2)/1000, pz=v=>(v-P.d/2)/1000;
   const mat=c=>new THREE.MeshLambertMaterial({color:new THREE.Color(c)});
-  const treadM=mat("#4d2a24"), riserM=mat("#f3ede3"), stringM=mat("#ece5da"),
+  /* riser takes the wall colour exactly, so the stair reads as part of the
+     room rather than a brighter white against it */
+  const treadM=mat("#4d2a24"), riserM=mat("#efe9df"), stringM=mat("#ece5da"),
         railM=mat("#3a2119");
   const nR=S.risers, rise=ht/nR, TT=0.05, NOSE=25;
   const goA=(S.x_turn-S.x_low)/S.treads_a;
@@ -1314,11 +1316,15 @@ function buildStair(g,P,ht){
      lighting, so it stays lit as the daylight scrubber runs down to dusk,
      which is the point of showing it. The wash panel fakes the spill onto the
      riser below rather than paying for 16 real lights. */
-  const ledM=new THREE.MeshBasicMaterial({color:new THREE.Color("#fff4dc")});
-  /* additive so it actually brightens what is behind it rather than tinting
-     it. depthWrite off or the glow slabs occlude each other. */
-  const glowM=new THREE.MeshBasicMaterial({color:new THREE.Color("#ffb257"),
-    transparent:true,opacity:0.55,blending:THREE.AdditiveBlending,depthWrite:false});
+  const ledM=new THREE.MeshBasicMaterial({color:new THREE.Color("#fff6e2")});
+  /* Bloom shells hugging the strip: concentric, each larger and fainter.
+     Additive so they read as light, depthWrite off or they occlude each other.
+     Kept tight on purpose. Big slabs running down the riser washed it white,
+     which is what made the stair look repainted. */
+  const glowM=[0.60,0.42,0.26,0.14].map(o=>new THREE.MeshBasicMaterial({
+    color:new THREE.Color("#ffa63e"),transparent:true,opacity:o,
+    blending:THREE.AdditiveBlending,depthWrite:false}));
+  const HALO=[[0.05,1.04],[0.085,1.08],[0.135,1.12],[0.20,1.16]];
   steps.forEach((s,si)=>{
     s.idx=si;
     let X0=s.x0,X1=s.x1;
@@ -1331,15 +1337,10 @@ function buildStair(g,P,ht){
        off the riser centreline put it inside the 30 mm riser, so it was buried
        in the geometry and never visible. */
     const rxw=px(rx), dir=(s.sign>0)?-1:1, zc=pz((s.z0+s.z1)/2);
-    box(0.010,0.038,wid*0.92,rxw+dir*0.024,s.top-TT-0.032,zc,ledM);
-    box(0.004,0.13,wid*0.95,rxw+dir*0.030,s.top-TT-0.055,zc,glowM);
-    box(0.004,0.24,wid*1.00,rxw+dir*0.034,s.top-TT-0.075,zc,glowM);
-    /* a real light every third tread, so the wash falls off across the flight
-       instead of being a flat decal. Every tread would be 32 lights. */
-    if(s.idx%3===0){
-      const L=new THREE.PointLight(0xffb257,0.55,1.6);
-      L.position.set(rxw+dir*0.09,s.top-TT-0.06,zc); g.add(L);
-    }
+    const ly=s.top-TT-0.032;
+    box(0.010,0.040,wid*0.92,rxw+dir*0.024,ly,zc,ledM);
+    HALO.forEach((q,qi)=>
+      box(0.003,q[0],wid*q[1],rxw+dir*(0.027+qi*0.004),ly,zc,glowM[qi]));
   });
 
   /* ---- sloped members: strings and handrail ----------------------------- */
