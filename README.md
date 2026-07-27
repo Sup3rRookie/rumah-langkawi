@@ -12,9 +12,14 @@ the source PDF is not distributed with this repository.
 **Live:** https://sup3rrookie.github.io/rumah-langkawi/
 
 `dist/rumah-langkawi-3d.html` is a single self-contained file. Open it in any
-browser — no server, no build step, no install. It loads three.js from a CDN;
-everything else (geometry, palette, logic) is inline. The root `index.html` is
-only a redirect, so the GitHub Pages URL lands straight on the app.
+browser, no server, no build step, no install. It loads three.js from a CDN;
+everything else (geometry, palette, logic) is inline.
+
+`docs/index.html` is the same file again, and is what GitHub Pages serves.
+Pages will only publish the repo root or `/docs`, and root would put the whole
+repository online including `scripts/` and `data/`, so the site is built into
+`/docs` instead. `scripts/build_app.py` writes both copies. Pages settings:
+Deploy from a branch, `master`, folder `/docs`.
 
 The geometry is not hand-authored. It is extracted from the vector linework of
 the floor-plan PDF by a set of Python scripts in `scripts/`, which emit JSON into

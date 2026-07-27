@@ -3,6 +3,11 @@ import pdfplumber, json, math, pathlib
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PDF = str(ROOT / 'data' / 'Langkawi-Interior_Floor_Layout.pdf')
 OUT = ROOT / 'dist' / 'rumah-langkawi-3d.html'
+# GitHub Pages will only serve the repo root or /docs. Root would publish the
+# whole repository, scripts and data included, so the site is built into /docs.
+# Same file, written twice: dist/ is the build output, docs/index.html is what
+# gets served.
+PAGES = ROOT / 'docs' / 'index.html'
 GRAY = (0.49804, 0.49804, 0.49804)
 RED = (1.0, 0.0, 0.0)
 SNAP = 5.0
@@ -2343,5 +2348,8 @@ build(); sunState(13); resize();
 </body>
 </html>'''
 
-OUT.write_text(HTML.replace('__DATA__', blob), encoding='utf-8')
+page = HTML.replace('__DATA__', blob)
+OUT.write_text(page, encoding='utf-8')
+PAGES.write_text(page, encoding='utf-8')
 print('wrote', OUT)
+print('wrote', PAGES, '(served by GitHub Pages)')
