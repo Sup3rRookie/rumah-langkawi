@@ -87,7 +87,8 @@ JSON payload of wall and furniture segments into the HTML template.
 ## Known-good numbers
 
 - GF 7640 × 17549 mm, FF 8460 × 17528 mm
-- Staircase: |_| dog-leg, landing west, ~290 mm going, 16 risers (assumed)
+- Staircase: half-turn with a straight half-space landing at the EAST end,
+  290 mm going, 7 treads per flight, 16 risers floor to floor
 - Ceiling: 3.0 m both floors (Malaysian standard, ASSUMED — see open items)
 - Paint totals at 3.0 m: Timeless 50.9 L, Light clay 29.0 L, Tender greige
   15.9 L, Parchment 13.7 L, primer 54.8 L, ceiling 37.3 L

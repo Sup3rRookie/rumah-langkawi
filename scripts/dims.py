@@ -1,7 +1,7 @@
-import pdfplumber, math
+import pdfplumber, math, pathlib
 from collections import defaultdict
 
-PDF = '/mnt/user-data/uploads/Langkawi-Interior_Floor_Layout.pdf'
+PDF = str(pathlib.Path(__file__).resolve().parent.parent / 'data' / 'Langkawi-Interior_Floor_Layout.pdf')
 BLACKS = (0, (0.0, 0.0, 0.0))
 
 with pdfplumber.open(PDF) as pdf:

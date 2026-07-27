@@ -1,6 +1,8 @@
-import pdfplumber, json, math
+import pdfplumber, json, math, pathlib
 
-PDF = '/mnt/user-data/uploads/Langkawi-Interior_Floor_Layout.pdf'
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+PDF = str(ROOT / 'data' / 'Langkawi-Interior_Floor_Layout.pdf')
+OUT = ROOT / 'dist' / 'rumah-langkawi-3d.html'
 GRAY = (0.49804, 0.49804, 0.49804)
 RED = (1.0, 0.0, 0.0)
 SNAP = 5.0
@@ -111,8 +113,45 @@ for key, (lo, hi, known_w) in PLANS.items():
 
     stair = None
     if key == 'gf':
-        stair = dict(x0=4490, x1=7490, landw=970,
-                     fa=[6525, 7365], fb=[8530, 9560], risers=16)
+        # Half-turn stair with a straight half-space landing, set out from the
+        # plan's own nosing lines. Both flights run along X and stop at x=6520;
+        # the 970 mm strip at the EAST end is a flat landing, not steps.
+        #   flight A  z 6525..7365   x 4490..6520   7 treads at 290 mm
+        #   landing   x 6520..7490   z 6525..9560   flat, at half height
+        #   flight B  z 8530..9560   x 6520..4490   7 treads at 290 mm
+        # 8 risers per flight => 16 risers floor to floor.
+        #
+        # NOTE: the plan does carry four nosing-spaced lines across the landing
+        # strip (z 7365/7655/7950/8235/8530 at 290/295/285/295). Read literally
+        # those are winders, which is how an earlier pass modelled it. The
+        # client's photograph of the built stair shows a straight landing, so
+        # the landing wins and those lines are treated as setting-out only.
+        stair = dict(x_low=4490, x_turn=6520, x_east=7490,
+                     fa=[6525, 7365], fb=[8530, 9560],
+                     treads_a=7, treads_b=7, risers=16)
+
+        # These are stair setting-out lines, not walls. Left in, they extrude
+        # as 3 m slabs and box the stairwell in. Drop them so the flights read
+        # as an open stair with a balustrade. The x=4490 run is the line closing
+        # off the head of flight B — the wall the stair appeared to run into.
+        SL = [('h', 6525, 4490, 7490), ('h', 7365, 4490, 7490),
+              ('h', 8530, 4490, 7490), ('v', 6520, 6525, 9560),
+              ('h', 7655, 6520, 7490), ('h', 7950, 6520, 7490),
+              ('h', 8235, 6520, 7490), ('v', 4490, 8530, 9705)]
+
+        def stairline(w):
+            for kind, c, a, b in SL:
+                if kind == 'h' and abs(w[1] - w[3]) < 1 and abs(w[1] - c) < 3:
+                    if min(w[0], w[2]) >= a - 3 and max(w[0], w[2]) <= b + 3:
+                        return True
+                if kind == 'v' and abs(w[0] - w[2]) < 1 and abs(w[0] - c) < 3:
+                    if min(w[1], w[3]) >= a - 3 and max(w[1], w[3]) <= b + 3:
+                        return True
+            return False
+
+        n_before = len(walls)
+        walls = [w for w in walls if not stairline(w)]
+        print('   gf: removed %d stair setting-out lines' % (n_before - len(walls)))
     data[key] = dict(w=round((max(xs) - x0) * scale), d=round((max(ys) - y0) * scale),
                      walls=walls, furn=furn, stair=stair)
     print(key, data[key]['w'], 'x', data[key]['d'], 'walls', len(walls), 'furn', len(furn))
@@ -260,6 +299,92 @@ const CX={}, CZ={};
 for(const k in PLAN){ CX[k]=PLAN[k].w/2000; CZ[k]=PLAN[k].d/2000; }
 
 const wallMeshes=[];
+
+/* Half-turn stair, built from the plan's own nosing lines.
+   Both flights run along X and stop at x_turn; the turn is the strip at the
+   east end where turn_z climbs in Z. Ascent order is flight A -> turn ->
+   flight B, so the top lands back at the west end, one floor up. */
+function buildStair(g,P,ht){
+  const S=P.stair;
+  const px=v=>(v-P.w/2)/1000, pz=v=>(v-P.d/2)/1000;
+  const mat=c=>new THREE.MeshLambertMaterial({color:new THREE.Color(c)});
+  const treadM=mat("#4d2a24"), riserM=mat("#f3ede3"), stringM=mat("#ece5da"),
+        railM=mat("#3a2119"), balM=mat("#e9e2d5");
+  const nR=S.risers, rise=ht/nR, TT=0.05, NOSE=25;
+  const goA=(S.x_turn-S.x_low)/S.treads_a;
+  const nA=S.treads_a, LAND=nA+1;          /* landing is the (nA+1)th riser */
+
+  const box=(w,h,d,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);
+    o.position.set(x,y,z); g.add(o); return o;};
+
+  /* ---- treads, landing and risers, in order of ascent ------------------- */
+  const steps=[];
+  for(let i=0;i<nA;i++)                                   /* flight A, +X */
+    steps.push({x0:S.x_low+goA*i,x1:S.x_low+goA*(i+1),
+                z0:S.fa[0],z1:S.fa[1],sign:1,top:(i+1)*rise});
+  steps.push({x0:S.x_turn,x1:S.x_east,                    /* half-space landing */
+              z0:S.fa[0],z1:S.fb[1],sign:1,top:LAND*rise,landing:true});
+  for(let i=0;i<S.treads_b;i++)                           /* flight B, -X */
+    steps.push({x0:S.x_turn-goA*(i+1),x1:S.x_turn-goA*i,
+                z0:S.fb[0],z1:S.fb[1],sign:-1,top:(LAND+1+i)*rise});
+
+  steps.forEach(s=>{
+    let X0=s.x0,X1=s.x1;
+    if(s.sign>0) X0-=NOSE; else X1+=NOSE;
+    box((X1-X0)/1000,TT,(s.z1-s.z0)/1000,
+        px((X0+X1)/2),s.top-TT/2,pz((s.z0+s.z1)/2),treadM);
+    const rx=(s.sign>0)?s.x0:s.x1;
+    box(0.03,rise-TT,(s.z1-s.z0)/1000,px(rx),s.top-TT-(rise-TT)/2,
+        pz((s.z0+s.z1)/2),riserM);
+  });
+
+  /* ---- sloped members: strings and handrail ----------------------------- */
+  const XA=new THREE.Vector3(1,0,0);
+  const slope=(a,b,w,h,m)=>{
+    const d=new THREE.Vector3(b.x-a.x,b.y-a.y,b.z-a.z), len=d.length();
+    if(len<1e-4) return;
+    const o=new THREE.Mesh(new THREE.BoxGeometry(len,h,w),m);
+    o.position.set((a.x+b.x)/2,(a.y+b.y)/2,(a.z+b.z)/2);
+    o.quaternion.setFromUnitVectors(XA,d.normalize());
+    g.add(o); return o;
+  };
+  const V=(x,y,z)=>new THREE.Vector3(px(x),y,pz(z));
+  const SD=0.30, ST=0.04, DROP=0.11;   /* string depth, thickness, drop below pitch */
+
+  /* flight A strings, both sides */
+  [S.fa[0],S.fa[1]].forEach(z=>
+    slope(V(S.x_low,rise-DROP,z),V(S.x_turn,LAND*rise-DROP,z),ST,SD,stringM));
+  /* landing fascia across the well side */
+  box(ST,SD,(S.fb[1]-S.fa[0])/1000,px(S.x_turn),LAND*rise-DROP,
+      pz((S.fa[0]+S.fb[1])/2),stringM);
+  /* flight B strings, both sides */
+  [S.fb[0],S.fb[1]].forEach(z=>
+    slope(V(S.x_turn,(LAND+1)*rise-DROP,z),V(S.x_low,nR*rise-DROP,z),ST,SD,stringM));
+
+  /* ---- balustrade: one continuous rail around the open well ------------- */
+  const RH=0.90, RT=0.055;             /* rail height above pitch, rail section */
+  const runs=[
+    {a:V(S.x_low, rise+RH,        S.fa[1]), b:V(S.x_turn,LAND*rise+RH,     S.fa[1])},
+    {a:V(S.x_turn,LAND*rise+RH,   S.fa[1]), b:V(S.x_turn,(LAND+1)*rise+RH, S.fb[0])},
+    {a:V(S.x_turn,(LAND+1)*rise+RH,S.fb[0]),b:V(S.x_low, nR*rise+RH,       S.fb[0])}
+  ];
+  const balGeo=new THREE.CylinderGeometry(0.017,0.021,1,8), BH=RH-RT;
+  runs.forEach(r=>{
+    slope(r.a,r.b,RT,RT,railM);
+    const L=Math.hypot(r.b.x-r.a.x,r.b.z-r.a.z), n=Math.max(2,Math.round(L/0.115));
+    for(let i=0;i<=n;i++){
+      const t=i/n, x=r.a.x+(r.b.x-r.a.x)*t, z=r.a.z+(r.b.z-r.a.z)*t;
+      const y0=r.a.y+(r.b.y-r.a.y)*t-RH;
+      const o=new THREE.Mesh(balGeo,balM);
+      o.position.set(x,y0+BH/2,z); o.scale.y=BH; g.add(o);
+    }
+  });
+  /* newel posts at the foot, both landing corners and the head */
+  [[S.x_low,S.fa[1],rise],[S.x_turn,S.fa[1],LAND*rise],
+   [S.x_turn,S.fb[0],(LAND+1)*rise],[S.x_low,S.fb[0],nR*rise]
+  ].forEach(p=>{const h=RH+0.09; box(0.075,h,0.075,px(p[0]),p[2]+h/2,pz(p[1]),railM);});
+}
+
 function build(){
   while(root.children.length){const c=root.children.pop();
     if(c.geometry)c.geometry.dispose(); if(c.material)c.material.dispose();}
@@ -301,27 +426,7 @@ function build(){
       bg.setAttribute("position",new THREE.Float32BufferAttribute(pts,3));
       g.add(new THREE.LineSegments(bg,new THREE.LineBasicMaterial({color:0x6f6a60})));
     }
-    if(P.stair){
-      const S=P.stair, oakM=new THREE.MeshLambertMaterial({color:new THREE.Color("#b98d5f")});
-      const px=v=>(v-P.w/2)/1000, pz=v=>(v-P.d/2)/1000;
-      const nR=S.risers, riser=ht/nR, n1=Math.floor(nR/2)-1, n2=nR-n1-2;
-      const edge=S.x0+S.landw, run=S.x1-edge, go=run/(n1+1);
-      const fa=[pz(S.fa[0]),pz(S.fa[1])], fb=[pz(S.fb[0]),pz(S.fb[1])];
-      const T=(w,d2,x,y,z)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,0.05,d2),oakM);
-        m.position.set(x,y,z); g.add(m);};
-      for(let i=0;i<n1;i++)
-        T(go/1000-0.01, fa[1]-fa[0], px(S.x1-go*(i+0.5)), riser*(i+1), (fa[0]+fa[1])/2);
-      T(S.landw/1000, fb[1]-fa[0], px(S.x0+S.landw/2), riser*(n1+1), (fa[0]+fb[1])/2);
-      for(let i=0;i<n2;i++)
-        T(go/1000-0.01, fb[1]-fb[0], px(edge+go*(i+0.5)), riser*(n1+2+i), (fb[0]+fb[1])/2);
-      const railM=new THREE.MeshLambertMaterial({color:new THREE.Color("#54524c")});
-      const post=(x,z,yb)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(0.05,1.0,0.05),railM);
-        m.position.set(x,(yb||0)+0.5,z); g.add(m);};
-      post(px(S.x1),(fa[0]+fa[1])/2,0);
-      post(px(edge),(fa[0]+fa[1])/2,riser*n1);
-      post(px(edge),(fb[0]+fb[1])/2,riser*(n1+1));
-      post(px(S.x1),(fb[0]+fb[1])/2,ht-riser);
-    }
+    if(P.stair) buildStair(g,P,ht);
     root.add(g);
   });
   applyFloors();
@@ -461,5 +566,5 @@ build(); sunState(13); resize();
 </body>
 </html>'''
 
-open('/mnt/user-data/outputs/rumah-langkawi-3d.html', 'w').write(HTML.replace('__DATA__', blob))
-print('wrote rumah-langkawi-3d.html')
+OUT.write_text(HTML.replace('__DATA__', blob), encoding='utf-8')
+print('wrote', OUT)
