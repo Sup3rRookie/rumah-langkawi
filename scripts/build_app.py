@@ -13,6 +13,169 @@ with pdfplumber.open(PDF) as pdf:
     page = pdf.pages[0]
     lines, curves = page.lines, page.curves
 
+def openings(walls):
+    """Recover window openings, and strip the lines that mark them.
+
+    In this drawing a window is a glazing line run down the middle of a wall
+    band: two parallel wall faces 100-200 mm apart with a third line between
+    them, spanning only the opening. Left alone that line extrudes as a thin
+    full-height wall sitting inside the wall, which is why windows did not read
+    in the model. Returns (windows, kept_walls).
+    """
+    from collections import defaultdict
+
+    def scan(walls, horiz, banned):
+        """One pass over one orientation. `banned` holds lines already known to
+        be glazing, so they are not themselves mistaken for wall faces — without
+        that, a glazing line pairs with the far face and reports the same window
+        twice at two different thicknesses."""
+        wins, drop = [], set()
+        byc = defaultdict(list)
+        for w in walls:
+            if horiz and abs(w[1] - w[3]) < 1:
+                byc[w[1]].append((min(w[0], w[2]), max(w[0], w[2])))
+            elif not horiz and abs(w[0] - w[2]) < 1:
+                byc[w[0]].append((min(w[1], w[3]), max(w[1], w[3])))
+        cs = sorted(byc)
+
+        # A wall face is normally broken exactly where a window sits, so the
+        # glazing line cannot be required to fall inside an unbroken run of it.
+        # Test against the face's overall extent instead. That is loose on its
+        # own, but the line must also sit strictly between two faces 100-200 mm
+        # apart, and nothing but glazing is ever drawn inside a wall.
+        extent = {c: (min(s for s, _ in byc[c]), max(e for _, e in byc[c])) for c in cs}
+
+        def covered(span, c, tol=250.0):
+            lo_, hi_ = extent[c]
+            return lo_ - tol <= span[0] and span[1] <= hi_ + tol
+
+        for i, ca in enumerate(cs):
+            if ca in banned:
+                continue
+            for cb in cs[i + 1:]:
+                if cb in banned:
+                    continue
+                # Real wall bands in this drawing measure 145-165 mm. Holding
+                # the window to 130-185 mm is what stops a glazing line pairing
+                # with the far face (110 mm) or with an unrelated partition
+                # (200 mm) and reporting the same window twice.
+                if cb - ca < 130:
+                    continue
+                if cb - ca > 185:
+                    break
+                for c in cs:
+                    if not (ca + 20 < c < cb - 20):
+                        continue
+                    for span in byc[c]:
+                        if span[1] - span[0] < 400:
+                            continue
+                        if covered(span, ca) and covered(span, cb):
+                            wins.append({'o': 'h' if horiz else 'v',
+                                         'c': (ca + cb) / 2.0,
+                                         'a': span[0], 'b': span[1],
+                                         't': cb - ca})
+                            drop.add(('h' if horiz else 'v', c, span[0], span[1]))
+        return wins, drop
+
+    wins, drop = [], set()
+    for horiz in (True, False):
+        # pass 1 finds the glazing lines, pass 2 re-reads the wall bands with
+        # those lines excluded so each window is reported once, at the real
+        # wall thickness
+        w1, d1 = scan(walls, horiz, set())
+        wins += w1
+        drop |= d1
+
+    # merge anything still overlapping on the same wall
+    merged = []
+    for w in sorted(wins, key=lambda q: (q['o'], q['a'])):
+        hit = None
+        for m in merged:
+            if (m['o'] == w['o'] and abs(m['c'] - w['c']) <= 150
+                    and w['a'] <= m['b'] + 1 and m['a'] <= w['b'] + 1):
+                hit = m
+                break
+        if hit:
+            hit['a'] = min(hit['a'], w['a'])
+            hit['b'] = max(hit['b'], w['b'])
+        else:
+            merged.append(dict(w))
+
+    def is_glazing(w):
+        if abs(w[1] - w[3]) < 1:
+            key = ('h', w[1], min(w[0], w[2]), max(w[0], w[2]))
+        elif abs(w[0] - w[2]) < 1:
+            key = ('v', w[0], min(w[1], w[3]), max(w[1], w[3]))
+        else:
+            return False
+        return key in drop
+
+    kept = [w for w in walls if not is_glazing(w)]
+    return merged, kept
+
+
+def massing(furn, tol=80.0):
+    """Group the plan's furniture linework into blocks we can extrude.
+
+    The PDF gives loose red segments, not closed outlines, so pieces are
+    recovered by joining segments whose endpoints are within `tol` and taking
+    each group's bounding box. 80 mm is the working figure: at 150 mm separate
+    pieces start chaining into 30 m2 blobs, at 40 mm single pieces fragment.
+
+    Heights are a size heuristic, not data — the drawing carries no furniture
+    schedule. They give scale and occlusion for judging paint, nothing more.
+    """
+    n = len(furn)
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    grid = {}
+    for i, s in enumerate(furn):
+        for p in ((s[0], s[1]), (s[2], s[3])):
+            grid.setdefault((int(p[0] // tol), int(p[1] // tol)), []).append(i)
+    for i, s in enumerate(furn):
+        for p in ((s[0], s[1]), (s[2], s[3])):
+            gx, gy = int(p[0] // tol), int(p[1] // tol)
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for j in grid.get((gx + dx, gy + dy), ()):
+                        if j == i:
+                            continue
+                        t = furn[j]
+                        for q in ((t[0], t[1]), (t[2], t[3])):
+                            if math.dist(p, q) <= tol:
+                                union(i, j)
+
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(furn[i])
+
+    out = []
+    for c in groups.values():
+        gx = [v for s in c for v in (s[0], s[2])]
+        gy = [v for s in c for v in (s[1], s[3])]
+        bx0, bx1, by0, by1 = min(gx), max(gx), min(gy), max(gy)
+        area = (bx1 - bx0) * (by1 - by0) / 1e6
+        if area < 0.15:                 # detail lines, hatching, noise
+            continue
+        if area >= 6.0:   h, tier = 0.04, 'rug'    # rugs and floor inlays
+        elif area >= 2.5: h, tier = 0.45, 'soft'   # beds, sofa groups
+        elif area >= 0.9: h, tier = 0.75, 'table'  # tables, counters, islands
+        else:             h, tier = 0.45, 'small'  # chairs, side tables
+        out.append([bx0, by0, bx1, by1, h, tier])
+    return out
+
+
 data = {}
 STAIRBOX = {}
 for key, (lo, hi, known_w) in PLANS.items():
@@ -111,7 +274,8 @@ for key, (lo, hi, known_w) in PLANS.items():
         STAIRBOX[key] = (bx0, by0, bx1, by1)
     print('   %s: removed %d tread lines, %d stairwell partitions' % (key, n_t, n_i))
 
-    stair = None
+    stair = well = guard = stair_below = None
+    SL = None
     if key == 'gf':
         # Half-turn stair with a straight half-space landing, set out from the
         # plan's own nosing lines. Both flights run along X and stop at x=6520;
@@ -136,11 +300,37 @@ for key, (lo, hi, known_w) in PLANS.items():
         # off the head of flight B — the wall the stair appeared to run into.
         SL = [('h', 6525, 4490, 7490), ('h', 7365, 4490, 7490),
               ('h', 8530, 4490, 7490), ('v', 6520, 6525, 9560),
-              ('h', 7655, 6520, 7490), ('h', 7950, 6520, 7490),
-              ('h', 8235, 6520, 7490), ('v', 4490, 8530, 9705)]
+              ('v', 4490, 8530, 9705),
+              ('hband', 7366, 8529, 6520, 7490)]
 
+    if key == 'ff':
+        # The first floor repeats the same stairwell, offset +820 mm in X
+        # (the FF plan is 8460 wide against the GF's 7640; z is common):
+        #   4490 -> 5310, 6520 -> 7340, 7490 -> 8310.
+        # There is no stair to draw up here — what belongs on this floor is the
+        # void the stair rises into, plus a guard along its open west edge.
+        well = [5310, 6520, 8310, 9545]
+        guard = [[5310, 6520, 5310, 8515]]   # stops short of the arrival gap
+        # The same stair, in FF coordinates, so the first floor can show it
+        # arriving from below instead of an empty hole in the slab.
+        stair_below = dict(x_low=5310, x_turn=7340, x_east=8310,
+                           fa=[6520, 7355], fb=[8515, 9545],
+                           treads_a=7, treads_b=7, risers=16)
+        SL = [('h', 6520, 5310, 8310), ('h', 7355, 5310, 8310),
+              ('h', 8515, 5310, 8310), ('v', 7340, 6520, 9545),
+              ('v', 5310, 6520, 9545),
+              ('hband', 7356, 8514, 7340, 8310)]
+
+    if SL:
         def stairline(w):
-            for kind, c, a, b in SL:
+            for r in SL:
+                if r[0] == 'hband':
+                    _, z0, z1, a, b = r
+                    if (abs(w[1] - w[3]) < 1 and z0 <= w[1] <= z1
+                            and min(w[0], w[2]) >= a - 3 and max(w[0], w[2]) <= b + 3):
+                        return True
+                    continue
+                kind, c, a, b = r
                 if kind == 'h' and abs(w[1] - w[3]) < 1 and abs(w[1] - c) < 3:
                     if min(w[0], w[2]) >= a - 3 and max(w[0], w[2]) <= b + 3:
                         return True
@@ -151,10 +341,34 @@ for key, (lo, hi, known_w) in PLANS.items():
 
         n_before = len(walls)
         walls = [w for w in walls if not stairline(w)]
-        print('   gf: removed %d stair setting-out lines' % (n_before - len(walls)))
-    data[key] = dict(w=round((max(xs) - x0) * scale), d=round((max(ys) - y0) * scale),
-                     walls=walls, furn=furn, stair=stair)
-    print(key, data[key]['w'], 'x', data[key]['d'], 'walls', len(walls), 'furn', len(furn))
+        print('   %s: removed %d stair setting-out lines' % (key, n_before - len(walls)))
+    n_pre = len(walls)
+    wins, walls = openings(walls)
+    print('   %s: %d window openings, %d glazing lines pulled out of the walls'
+          % (key, len(wins), n_pre - len(walls)))
+    for q in wins:
+        print('      %s wall at %-7.0f  %6.0f..%-6.0f  width %5.0f  thk %3.0f'
+              % (q['o'], q['c'], q['a'], q['b'], q['b'] - q['a'], q['t']))
+
+    furn3d = massing(furn)
+    w_mm, d_mm = round((max(xs) - x0) * scale), round((max(ys) - y0) * scale)
+
+    # Each plan is centred on its own width, but the FF plan is 820 mm west of
+    # the GF one and 820 mm wider, so centring alone leaves them 410 mm out of
+    # register. Stacked view needs that corrected or the stairwell void does not
+    # sit over the stair. Z needs no correction: the common z 6525/6520 lands
+    # within 6 mm. The 820 mm is measured — GF 4490/6520/7490 map to FF
+    # 5310/7340/8310 exactly.
+    align = None
+    if key == 'ff':
+        align = -(820 - w_mm / 2 + data['gf']['w'] / 2)
+
+    data[key] = dict(w=w_mm, d=d_mm,
+                     walls=walls, furn=furn, furn3d=furn3d, stair=stair,
+                     well=well, guard=guard, align=align,
+                     stair_below=stair_below, wins=wins)
+    print(key, data[key]['w'], 'x', data[key]['d'], 'walls', len(walls),
+          'furn', len(furn), '->', len(furn3d), 'massing blocks')
 
 blob = json.dumps(data, separators=(',', ':'))
 print('embedded payload', round(len(blob) / 1024), 'KB')
@@ -266,7 +480,8 @@ sun tracks across an assumed orientation and the room-by-room light story will b
 <div class="row"><label for="hGf">GF height</label><input type="number" id="hGf" value="3.0" step="0.1" min="2.2" max="6"><span class="stat">m</span></div>
 <div class="row"><label for="hFf">FF height</label><input type="number" id="hFf" value="3.0" step="0.1" min="2.2" max="6"><span class="stat">m</span></div>
 <div class="row"><label for="furn">Furniture</label><select id="furn">
-<option value="1">Show layout</option><option value="0">Hide</option></select></div>
+<option value="2">3D massing</option><option value="1">Outline only</option>
+<option value="0">Hide</option></select></div>
 <p class="note" id="meta"></p></div>
 <div class="grp"><h2>Spec</h2><button class="spec" id="copy">Copy painted spec</button></div>
 </aside>
@@ -385,6 +600,66 @@ function buildStair(g,P,ht){
   ].forEach(p=>{const h=RH+0.09; box(0.075,h,0.075,px(p[0]),p[2]+h/2,pz(p[1]),railM);});
 }
 
+/* Furniture massing in a Japandi register: pale oak carcasses, oat and linen
+   soft goods, one charcoal moment in every five small pieces. Follows the
+   composition target in HANDOFF.md — mostly light ground, a little mid neutral,
+   a small dark/green accent. Blocks are massing for scale and occlusion, not a
+   furnishing proposal; the plan carries no furniture schedule. */
+const JAPANDI={oak:"#cbb08a",oakDark:"#a8907f",linen:"#dbd4c9",
+               oat:"#e3d7c3",char:"#4c4c49",sage:"#a6ac94"};
+function buildFurniture(g,P){
+  const M={}; for(const k in JAPANDI)
+    M[k]=new THREE.MeshLambertMaterial({color:new THREE.Color(JAPANDI[k])});
+  const sh=(v,c)=>Math.max(0.06,v-c);
+  const box=(w,h,d,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);
+    o.position.set(x,y,z); g.add(o);};
+  P.furn3d.forEach((b,i)=>{
+    const cx=((b[0]+b[2])/2-P.w/2)/1000, cz=((b[1]+b[3])/2-P.d/2)/1000;
+    const w=(b[2]-b[0])/1000, d=(b[3]-b[1])/1000, tier=b[5];
+    if(tier==="rug"){
+      box(sh(w,0.06),0.012,sh(d,0.06),cx,0.012,cz,M.oat);
+    }else if(tier==="soft"){                       /* low platform + upholstery */
+      box(w,0.12,d,cx,0.06,cz,M.oak);
+      box(sh(w,0.12),0.30,sh(d,0.12),cx,0.27,cz,M.linen);
+    }else if(tier==="table"){                      /* thin top on an inset base */
+      box(w,0.045,d,cx,0.7275,cz,M.oak);
+      box(sh(w,0.22),0.70,sh(d,0.22),cx,0.35,cz,M.oakDark);
+    }else{                                         /* chairs, side tables */
+      const m=(i%5===0)?M.char:((i%5===3)?M.sage:M.oak);
+      box(w,0.40,d,cx,0.20,cz,m);
+      box(sh(w,0.05),0.045,sh(d,0.05),cx,0.4225,cz,M.linen);
+    }
+  });
+}
+
+/* Guarding around a floor opening — same balustrade language as the stair,
+   but level. Used on the first floor where the slab is cut for the stairwell. */
+function buildGuard(g,P){
+  const railM=new THREE.MeshLambertMaterial({color:new THREE.Color("#3a2119")}),
+        balM=new THREE.MeshLambertMaterial({color:new THREE.Color("#e9e2d5")});
+  const balGeo=new THREE.CylinderGeometry(0.017,0.021,1,8);
+  const RH=0.95, RT=0.055, BH=RH-RT;
+  P.guard.forEach(q=>{
+    const ax=(q[0]-P.w/2)/1000, az=(q[1]-P.d/2)/1000,
+          bx=(q[2]-P.w/2)/1000, bz=(q[3]-P.d/2)/1000;
+    const L=Math.hypot(bx-ax,bz-az); if(L<0.1) return;
+    const rail=new THREE.Mesh(new THREE.BoxGeometry(L,RT,RT),railM);
+    rail.position.set((ax+bx)/2,RH,(az+bz)/2);
+    rail.rotation.y=-Math.atan2(bz-az,bx-ax);
+    g.add(rail);
+    const n=Math.max(2,Math.round(L/0.115));
+    for(let i=0;i<=n;i++){
+      const t=i/n, o=new THREE.Mesh(balGeo,balM);
+      o.position.set(ax+(bx-ax)*t,BH/2,az+(bz-az)*t);
+      o.scale.y=BH; g.add(o);
+    }
+    [[ax,az],[bx,bz]].forEach(p=>{
+      const o=new THREE.Mesh(new THREE.BoxGeometry(0.075,RH+0.09,0.075),railM);
+      o.position.set(p[0],(RH+0.09)/2,p[1]); g.add(o);
+    });
+  });
+}
+
 function build(){
   while(root.children.length){const c=root.children.pop();
     if(c.geometry)c.geometry.dispose(); if(c.material)c.material.dispose();}
@@ -398,25 +673,93 @@ function build(){
       OFF.gf=-(wg+gap)/2; OFF.ff=(wf2+gap)/2;
       g.position.set(OFF[k],0,0);
     }else{
-      OFF.gf=0; OFF.ff=0;
-      g.position.set(0,(k==="ff")?H.gf:0,0);
+      OFF.gf=0; OFF.ff=(PLAN.ff.align||0)/1000;
+      g.position.set(OFF[k],(k==="ff")?H.gf:0,0);
     }
-    const slab=new THREE.Mesh(new THREE.PlaneGeometry(P.w/1000,P.d/1000),
+    /* slab, with the stairwell cut out of it where there is one. ShapeGeometry
+       lies in XY and is laid down by rotation.x=-PI/2, which maps shape +Y to
+       world -Z, so the hole's Y coordinates are negated. */
+    const sw=P.w/1000, sd=P.d/1000;
+    let slabGeo;
+    if(P.well){
+      const sh=new THREE.Shape();
+      sh.moveTo(-sw/2,-sd/2); sh.lineTo(sw/2,-sd/2);
+      sh.lineTo(sw/2,sd/2);   sh.lineTo(-sw/2,sd/2); sh.closePath();
+      const hx0=(P.well[0]-P.w/2)/1000, hx1=(P.well[2]-P.w/2)/1000,
+            hy0=-(P.well[1]-P.d/2)/1000, hy1=-(P.well[3]-P.d/2)/1000;
+      const hole=new THREE.Path();
+      hole.moveTo(hx0,hy0); hole.lineTo(hx1,hy0);
+      hole.lineTo(hx1,hy1); hole.lineTo(hx0,hy1); hole.closePath();
+      sh.holes.push(hole);
+      slabGeo=new THREE.ShapeGeometry(sh);
+    }else{
+      slabGeo=new THREE.PlaneGeometry(sw,sd);
+    }
+    const slab=new THREE.Mesh(slabGeo,
       new THREE.MeshLambertMaterial({color:new THREE.Color(k==="gf"?"#a9835a":"#b98d5f")}));
     slab.rotation.x=-Math.PI/2; slab.position.set(0,0.004,0); g.add(slab);
     const th=0.055, ht=H[k];
+    const glassM=new THREE.MeshLambertMaterial({color:new THREE.Color("#9fb4bd"),
+      transparent:true,opacity:0.34});
+    const frameM=new THREE.MeshLambertMaterial({color:new THREE.Color("#6b6257")});
     P.walls.forEach((w,i)=>{
-      const ax=(w[0]-P.w/2)/1000, az=(w[1]-P.d/2)/1000,
-            bx=(w[2]-P.w/2)/1000, bz=(w[3]-P.d/2)/1000;
-      const len=Math.hypot(bx-ax,bz-az); if(len<0.1)return;
-      const m=new THREE.Mesh(new THREE.BoxGeometry(len,ht,th),
-        new THREE.MeshLambertMaterial({color:new THREE.Color("#efe9df")}));
-      m.position.set((ax+bx)/2,ht/2,(az+bz)/2);
-      m.rotation.y=-Math.atan2(bz-az,bx-ax);
-      m.userData={floor:k,idx:i,code:"1024"};
-      g.add(m); wallMeshes.push(m);
+      const horiz=Math.abs(w[1]-w[3])<1, vert=Math.abs(w[0]-w[2])<1;
+      /* window spans that sit on this wall, in plan mm along its own axis */
+      let cuts=[];
+      if((horiz||vert)&&P.wins){
+        const c=horiz?w[1]:w[0], s0=Math.min(horiz?w[0]:w[1],horiz?w[2]:w[3]),
+              s1=Math.max(horiz?w[0]:w[1],horiz?w[2]:w[3]);
+        P.wins.forEach(q=>{
+          if((q.o==="h")!==horiz) return;
+          if(Math.abs(q.c-c)>q.t/2+30) return;
+          const a=Math.max(q.a,s0), b=Math.min(q.b,s1);
+          if(b-a>200) cuts.push([a,b,q.b-q.a]);
+        });
+        cuts.sort((p,q)=>p[0]-q[0]);
+      }
+      const piece=(a,b,y0,y1,mat,paintable)=>{
+        const t0=(a-(horiz?w[0]:w[1]))/((horiz?w[2]-w[0]:w[3]-w[1])||1);
+        const t1=(b-(horiz?w[0]:w[1]))/((horiz?w[2]-w[0]:w[3]-w[1])||1);
+        const ax=(w[0]+(w[2]-w[0])*t0-P.w/2)/1000, az=(w[1]+(w[3]-w[1])*t0-P.d/2)/1000,
+              bx=(w[0]+(w[2]-w[0])*t1-P.w/2)/1000, bz=(w[1]+(w[3]-w[1])*t1-P.d/2)/1000;
+        const len=Math.hypot(bx-ax,bz-az); if(len<0.02) return;
+        const m=new THREE.Mesh(new THREE.BoxGeometry(len,y1-y0,th),mat);
+        m.position.set((ax+bx)/2,(y0+y1)/2,(az+bz)/2);
+        m.rotation.y=-Math.atan2(bz-az,bx-ax);
+        if(paintable){m.userData={floor:k,idx:i,code:"1024"}; wallMeshes.push(m);}
+        g.add(m);
+      };
+      const solid=new THREE.MeshLambertMaterial({color:new THREE.Color("#efe9df")});
+      if(!cuts.length){
+        const ax=(w[0]-P.w/2)/1000, az=(w[1]-P.d/2)/1000,
+              bx=(w[2]-P.w/2)/1000, bz=(w[3]-P.d/2)/1000;
+        if(Math.hypot(bx-ax,bz-az)<0.1) return;
+        const m=new THREE.Mesh(new THREE.BoxGeometry(Math.hypot(bx-ax,bz-az),ht,th),solid);
+        m.position.set((ax+bx)/2,ht/2,(az+bz)/2);
+        m.rotation.y=-Math.atan2(bz-az,bx-ax);
+        m.userData={floor:k,idx:i,code:"1024"};
+        g.add(m); wallMeshes.push(m);
+        return;
+      }
+      const s0=Math.min(horiz?w[0]:w[1],horiz?w[2]:w[3]),
+            s1=Math.max(horiz?w[0]:w[1],horiz?w[2]:w[3]);
+      let at=s0;
+      cuts.forEach(cut=>{
+        if(cut[0]>at) piece(at,cut[0],0,ht,solid,true);
+        /* a wide opening is a glazed door to a terrace, so it runs to the floor */
+        const sill=(cut[2]>=2000)?0.05:0.90, head=Math.min(2.40,ht-0.15);
+        piece(cut[0],cut[1],0,sill,solid,true);
+        piece(cut[0],cut[1],head,ht,solid,true);
+        piece(cut[0],cut[1],sill,head,glassM,false);
+        piece(cut[0],cut[0]+40,sill,head,frameM,false);
+        piece(cut[1]-40,cut[1],sill,head,frameM,false);
+        at=cut[1];
+      });
+      if(at<s1) piece(at,s1,0,ht,solid,true);
     });
-    if(document.getElementById("furn").value==="1"){
+    const fmode=document.getElementById("furn").value;
+    if(fmode!=="0"){
+      if(fmode==="2"&&P.furn3d) buildFurniture(g,P);
       const pts=[];
       P.furn.forEach(f=>{
         pts.push((f[0]-P.w/2)/1000,0.012,(f[1]-P.d/2)/1000,
@@ -427,6 +770,22 @@ function build(){
       g.add(new THREE.LineSegments(bg,new THREE.LineBasicMaterial({color:0x6f6a60})));
     }
     if(P.stair) buildStair(g,P,ht);
+    /* Side by side, the first floor is shown on its own, so its stairwell would
+       otherwise be a hole onto the background. Draw the flight arriving from
+       below, on a patch of the floor it lands on. Stacked, the ground floor is
+       genuinely underneath and draws it already. */
+    if(P.stair_below&&layout==="side"){
+      const sg=new THREE.Group(); sg.position.y=-H.gf; g.add(sg);
+      const patch=new THREE.Mesh(
+        new THREE.PlaneGeometry((P.well[2]-P.well[0])/1000,(P.well[3]-P.well[1])/1000),
+        new THREE.MeshLambertMaterial({color:new THREE.Color("#a9835a")}));
+      patch.rotation.x=-Math.PI/2;
+      patch.position.set(((P.well[0]+P.well[2])/2-P.w/2)/1000,0.004,
+                         ((P.well[1]+P.well[3])/2-P.d/2)/1000);
+      sg.add(patch);
+      buildStair(sg,{w:P.w,d:P.d,stair:P.stair_below},H.gf);
+    }
+    if(P.guard) buildGuard(g,P);
     root.add(g);
   });
   applyFloors();
@@ -544,8 +903,12 @@ document.getElementById("hGf").oninput=e=>{H.gf=+e.target.value||3.0;build();fra
 document.getElementById("hFf").oninput=e=>{H.ff=+e.target.value||3.0;build();frame();};
 document.getElementById("furn").onchange=()=>{build();frame();};
 document.getElementById("copy").onclick=()=>{
-  const tally={};
-  wallMeshes.forEach(m=>{const k=m.userData.floor+"|"+m.userData.code;
+  /* walls split around a window contribute several meshes; count each wall once */
+  const tally={}, seen=new Set();
+  wallMeshes.forEach(m=>{
+    const id=m.userData.floor+"#"+m.userData.idx;
+    if(seen.has(id))return; seen.add(id);
+    const k=m.userData.floor+"|"+m.userData.code;
     tally[k]=(tally[k]||0)+1;});
   const nm=c=>{const p=PALETTE.find(x=>x[0]===c);return p?p[0]+" "+p[1]:c;};
   const rows=Object.keys(tally).sort().map(k=>{const [f,c]=k.split("|");
