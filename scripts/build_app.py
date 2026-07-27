@@ -988,6 +988,16 @@ for key, (lo, hi, known_w) in PLANS.items():
     wins, walls = openings(walls)
     print('   %s: %d window openings, %d glazing lines pulled out of the walls'
           % (key, len(wins), n_pre - len(walls)))
+
+    if key == 'ff':
+        # The drawing breaks the south wall of the tatami bedroom around a
+        # stippled box at x 2918..3696, so the extraction found no wall there
+        # and the model showed a 1070 mm hole. Client says it is plain wall.
+        # Added after openings() on purpose: the two faces are 160 mm apart,
+        # which is inside the window band, so patching earlier would invent a
+        # window here.
+        walls += [[2805, 13125, 3875, 13125], [2555, 13285, 3725, 13285]]
+        print('   ff: closed the tatami bedroom wall break (client: plain wall)')
     for q in wins:
         print('      %s wall at %-7.0f  %6.0f..%-6.0f  width %5.0f  thk %3.0f'
               % (q['o'], q['c'], q['a'], q['b'], q['b'] - q['a'], q['t']))
@@ -996,7 +1006,13 @@ for key, (lo, hi, known_w) in PLANS.items():
     # It is already modelled properly, so keep massing out of its footprint.
     keepout = None
     if stair:
-        keepout = [stair['x_low'], stair['fa'][0], stair['x_east'], stair['fb'][1]]
+        # min/max, not fa[0]/fb[1]: the flights can be listed in either order
+        # now that the ascent direction is data. Taken literally the rectangle
+        # inverts when they are swapped, the keepout matches nothing, and the
+        # stair's own red outline gets massed as a block of furniture sitting
+        # on top of the modelled stair.
+        keepout = [stair['x_low'], min(stair['fa'][0], stair['fb'][0]),
+                   stair['x_east'], max(stair['fa'][1], stair['fb'][1])]
     elif well:
         keepout = well
     furn3d = massing(furn, n_line, keepout, tiny)
