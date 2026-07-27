@@ -1547,8 +1547,12 @@ function buildFurniture(g,P){
      X, so it opens in Z. */
   const front=r=>{
     const ax=r.w>=r.d;
-    return ax ? {ax:true, x:0, z:(r.cz>0?1:-1), half:r.d/2}
-              : {ax:false,x:(r.cx>0?1:-1), z:0, half:r.w/2};
+    /* fx/fz point AWAY from the wall the run stands against, so out into the
+       room. The wall is the nearer edge of the plan, hence the sign flip: a
+       piece east of centre opens west. This was returning the opposite, which
+       faced every cabinet into its own wall. dep is across the run, len along. */
+    return ax ? {ax:true, fx:0, fz:(r.cz>0?-1:1), dep:r.d, len:r.w}
+              : {ax:false,fx:(r.cx>0?-1:1), fz:0, dep:r.w, len:r.d};
   };
   /* Warm strip under a worktop or shelf, plus two soft bloom shells. Shares
      glowMats with the stair, so one slider drives every LED in the house. */
@@ -1560,15 +1564,15 @@ function buildFurniture(g,P){
     glowMats.push({mat:m,base:o}); return m;});
   const strip=(r,s,y,len,off)=>{
     const w=s.ax?len:0.012, d=s.ax?0.012:len;
-    const x=r.cx+s.x*(s.half-off), z=r.cz+s.z*(s.half-off);
+    const x=r.cx+s.fx*(s.dep/2-off), z=r.cz+s.fz*(s.dep/2-off);
     box(w,0.014,d,x,y,z,ledM);
     [[0.07,1.6],[0.15,2.6]].forEach((q,qi)=>
       box(s.ax?len:q[0],q[0],s.ax?q[0]:len,x,y-q[0]*0.35,z,kGlow[qi]));
   };
-  const underLED=(r,y)=>{const s=front(r); strip(r,s,y,(s.ax?r.w:r.d)*0.9,0.03);};
-  const shelfLED=(r,s,y)=>strip(r,s,y-0.03,(s.ax?r.w:r.d)*0.8,0.30);
+  const underLED=(r,y)=>{const s=front(r); strip(r,s,y,s.len*0.9,0.03);};
+  const shelfLED=(r,s,y)=>strip(r,s,y-0.03,s.len*0.8,0.30);
   /* arch head over a recess, as short chords following the curve */
-  const arcRing=(r,s,run,top,th,m)=>{
+  const arcRing=(r,s,run,top,th,m,off)=>{
     const rad=run/2, spring=top-rad, seg=14;
     for(let i=0;i<seg;i++){
       const t0=Math.PI*(i/seg), t1=Math.PI*((i+1)/seg);
@@ -1576,8 +1580,8 @@ function buildFurniture(g,P){
       const u1=-rad*Math.cos(t1), v1=spring+rad*Math.sin(t1);
       const du=u1-u0, dv=v1-v0, L=Math.hypot(du,dv);
       const o=new THREE.Mesh(new THREE.BoxGeometry(s.ax?L:th,th,s.ax?th:L),m);
-      o.position.set(r.cx+(s.ax?(u0+u1)/2:-s.x*0.08),(v0+v1)/2,
-                     r.cz+(s.ax?-s.z*0.08:(u0+u1)/2));
+      o.position.set(r.cx+(s.ax?(u0+u1)/2:s.fx*(off||0)),(v0+v1)/2,
+                     r.cz+(s.ax?s.fz*(off||0):(u0+u1)/2));
       if(s.ax) o.rotation.z=Math.atan2(dv,du); else o.rotation.x=-Math.atan2(dv,du);
       g.add(o);
     }
@@ -1610,33 +1614,31 @@ function buildFurniture(g,P){
 
     }else if(tier==="niche"){   /* arched recess: sink, lit shelves, base units */
       R.forEach(r=>{
-        const run=(r.w>=r.d)?r.w:r.d, fw=(r.w>=r.d)?0.06:r.d, fd=(r.w>=r.d)?r.w:0.06;
-        const s=front(r), back=0.16;
+        const s=front(r), rh=TALLH-0.86, ry=0.86+rh/2;
+        /* place something at (u along the run, v out towards the open face) */
+        const at=(u,v)=>[r.cx+(s.ax?u:0)+s.fx*v, r.cz+(s.ax?0:u)+s.fz*v];
         box(sh(r.w,0.10),0.10,sh(r.d,0.10),r.cx,0.05,r.cz,M.char);
-        box(r.w,0.72,r.d,r.cx,0.46,r.cz,M.oak);
-        box(r.w,0.04,r.d,r.cx,0.84,r.cz,M.oat);
+        box(r.w,0.72,r.d,r.cx,0.46,r.cz,M.oak);           /* base units */
+        box(r.w,0.04,r.d,r.cx,0.84,r.cz,M.oat);           /* worktop */
         underLED(r,0.80);
-        /* recessed stone back, set behind the face of the run. Tops out at the
-           same TALLH as the cupboard beside it, or the joinery wall steps. */
-        const rh=TALLH-0.86, ry=0.86+rh/2;
-        box(r.w-(s.ax?back:0),rh,r.d-(s.ax?0:back),
-            r.cx-s.x*back/2,ry,r.cz-s.z*back/2,M.oat);
-        /* Oak reveals at the two ENDS of the run, framing the recess. The
-           offset goes along the run's own long axis: for a unit running in Z
-           that is Z. Offsetting in X instead threw them run/2 out sideways,
-           which pushed them clean through the wall behind. */
-        [-1,1].forEach(k=>box(s.ax?0.09:r.w,rh,s.ax?r.d:0.09,
-          r.cx+(s.ax?k*(r.w/2-0.045):0),ry,r.cz+(s.ax?0:k*(r.d/2-0.045)),M.oak));
-        arcRing(r,s,run,TALLH-0.22,0.075,M.oak);
-        box(r.w,0.05,r.d,r.cx,TALLH-0.025,r.cz,M.oat);   /* cornice over it */
-        /* two shelves, each with its own strip washing the stone behind */
-        [1.18,1.52].forEach(y=>{
-          box(s.ax?r.w*0.86:0.26,0.035,s.ax?0.26:r.d*0.86,
-              r.cx-s.x*0.13,y,r.cz-s.z*0.13,M.oak);
-          shelfLED(r,s,y);
-        });
-        /* the tap */
-        box(0.035,0.28,0.035,r.cx-s.x*0.16,1.00,r.cz-s.z*0.16,M.char);
+        /* Stone back of the recess: a panel at the REAR, thin across the run.
+           It used to be sized by shrinking the run instead of the depth, so it
+           filled the whole recess solid and buried the arch behind it. */
+        const back=-(s.dep/2-0.03), face=s.dep/2-0.05;
+        const bp=at(0,back);
+        box(s.ax?s.len-0.18:0.05,rh,s.ax?0.05:s.len-0.18,bp[0],ry,bp[1],M.oat);
+        /* oak reveals at the two ends of the run */
+        [-1,1].forEach(k=>{const p=at(k*(s.len/2-0.045),0);
+          box(s.ax?0.09:r.w,rh,s.ax?r.d:0.09,p[0],ry,p[1],M.oak);});
+        /* arch head, set just inside the open face */
+        arcRing(r,s,s.len,TALLH-0.22,0.075,M.oak,face);
+        box(r.w,0.05,r.d,r.cx,TALLH-0.025,r.cz,M.oat);    /* cornice */
+        /* two shelves in the recess, each washing the stone behind it */
+        [1.18,1.52].forEach(y=>{const p=at(0,back+0.16);
+          box(s.ax?s.len*0.86:0.28,0.035,s.ax?0.28:s.len*0.86,p[0],y,p[1],M.oak);
+          shelfLED(r,s,y);});
+        const tp=at(0,back+0.12);
+        box(0.035,0.28,0.035,tp[0],1.00,tp[1],M.char);    /* tap */
       });
 
     }else if(tier==="cupboard"){    /* full-height wardrobe: plinth, carcass,
