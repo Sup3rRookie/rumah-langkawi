@@ -63,8 +63,52 @@ input[type=range]::-moz-range-thumb{width:13px;height:13px;border:0;border-radiu
 .spec{width:100%;background:var(--ink2);border:1px solid var(--line2);border-radius:2px;
 padding:9px;font-size:12px;cursor:pointer}
 .spec:hover{background:var(--ink3)}
-@media (max-width:840px){main{flex-direction:column}#stage{height:50vh;flex:none}
-aside{width:100%;border-left:0;border-top:1px solid var(--line)}}
+#sheetBtn{display:none}
+#pad{display:none}
+
+/* Phones and small tablets. The panel becomes a bottom sheet so the model gets
+   the whole screen, and everything you tap grows to a finger-sized target. */
+@media (max-width:840px){
+  body{font-size:15px}
+  header{padding:9px 12px;gap:9px}
+  h1{font-size:17px}
+  .sub{display:none}
+  main{position:relative;flex-direction:column}
+  #stage{flex:1;height:auto;min-height:0}
+  aside{position:absolute;left:0;right:0;bottom:0;width:100%;max-height:74%;
+    border-left:0;border-top:1px solid var(--line);background:var(--ink);
+    transform:translateY(100%);transition:transform .22s ease;
+    padding:14px 16px 28px;z-index:6;
+    box-shadow:0 -14px 34px rgba(0,0,0,.5)}
+  aside.open{transform:translateY(0)}
+  aside::before{content:"";position:absolute;top:6px;left:50%;width:38px;height:4px;
+    margin-left:-19px;border-radius:2px;background:var(--line2)}
+  #sheetBtn{display:block;position:absolute;right:12px;bottom:12px;z-index:7;
+    background:var(--ink2);border:1px solid var(--line);color:var(--bone);
+    border-radius:24px;padding:12px 20px;font-size:14px;font-family:var(--sans)}
+  .seg button{padding:9px 14px;font-size:13px}
+  .row{margin-bottom:12px}
+  .row label{width:88px}
+  select,input[type=number]{padding:10px 10px;font-size:15px}
+  input[type=range]{height:30px}
+  input[type=range]::-webkit-slider-thumb{width:22px;height:22px;margin-top:-10px}
+  input[type=range]::-moz-range-thumb{width:22px;height:22px}
+  .pal button{min-height:46px}
+  .overlay.bl{display:none}
+  .overlay.tr{max-width:44vw}
+  .spec{padding:14px}
+  /* thumb pad for walking, since there is no keyboard on a phone */
+  #pad{position:absolute;left:12px;bottom:12px;z-index:7;
+    grid-template-columns:repeat(3,46px);grid-template-rows:repeat(2,46px);gap:5px}
+  #pad.on{display:grid}
+  #pad button{background:var(--ink2);border:1px solid var(--line);color:var(--bone);
+    border-radius:6px;font-size:17px;line-height:1}
+  #pad .sp{visibility:hidden}
+}
+@media (max-width:840px) and (orientation:landscape){
+  aside{max-height:88%}
+  #stage{min-height:0}
+}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
@@ -88,7 +132,12 @@ aside{width:100%;border-left:0;border-top:1px solid var(--line)}}
 <div class="overlay tr"><div class="lbl">Selected</div><div class="chip" id="chip"></div>
 <div class="cap" id="cap">click a wall</div></div>
 <div class="overlay bl" id="hint">Drag to orbit · scroll to zoom · click a wall to paint it</div>
+<div id="pad" role="group" aria-label="Move">
+<button class="sp"></button><button id="mF" aria-label="Forward">&#9650;</button><button class="sp"></button>
+<button id="mL" aria-label="Left">&#9664;</button><button id="mB" aria-label="Back">&#9660;</button>
+<button id="mR" aria-label="Right">&#9654;</button></div>
 </div>
+<button id="sheetBtn" aria-expanded="false">Controls</button>
 <aside>
 <div class="grp"><h2>Paint</h2><div class="pal" id="pal"></div>
 <p class="note">Pick a colour, then click any wall face in the model. Shift-click paints every
@@ -799,13 +848,14 @@ function sunState(h){
     String(hh).padStart(2,"0")+":"+((h%1)?"30":"00");
 }
 let theta=0.9, phi=0.92, radius=184, yaw=0, pitch=-0.08, wx=0, wz=6, wf="gf";
+let panX=0, panZ=0;    /* orbit target offset, so two fingers can pan */
 function frame(){
   if(mode==="orbit"){
     camera.fov=50;
     const ty=((layout==="stack"&&floors==="both")?H.gf*0.6:1.6)*SCALE;
-    camera.position.set(radius*Math.sin(phi)*Math.sin(theta), radius*Math.cos(phi)+2,
-                        radius*Math.sin(phi)*Math.cos(theta));
-    camera.lookAt(0,ty,0);
+    camera.position.set(panX+radius*Math.sin(phi)*Math.sin(theta), radius*Math.cos(phi)+2,
+                        panZ+radius*Math.sin(phi)*Math.cos(theta));
+    camera.lookAt(panX,ty,panZ);
   }else{
     camera.fov=62; camera.rotation.order="YXZ";
     camera.position.set((wx+OFF[wf])*SCALE,((layout==="stack"&&wf==="ff"?H.gf:0)+1.58)*SCALE,wz*SCALE);
@@ -815,17 +865,49 @@ function frame(){
 }
 function resize(){const w=stage.clientWidth,h=stage.clientHeight;
   renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix(); frame();}
+/* Multi-pointer input. One finger orbits or looks; two fingers pinch to zoom
+   and drag to pan, which is the only way to zoom on a phone since there is no
+   wheel. Pointer events cover mouse, pen and touch with one code path. */
 let drag=null, moved=0;
-renderer.domElement.addEventListener("pointerdown",e=>{drag={x:e.clientX,y:e.clientY};moved=0;
+const pts=new Map();
+const spread=()=>{const [a,b]=[...pts.values()];
+  return {d:Math.hypot(a.x-b.x,a.y-b.y),x:(a.x+b.x)/2,y:(a.y+b.y)/2};};
+let pinch=null;
+const zoomBy=v=>{
+  if(mode==="orbit") radius=Math.max(20,Math.min(360,radius+v));
+  else{const s=v*.03; wx+=Math.sin(yaw)*s; wz+=Math.cos(yaw)*s;}
+};
+renderer.domElement.addEventListener("pointerdown",e=>{
+  pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pts.size===2){pinch=spread(); drag=null;}
+  else{drag={x:e.clientX,y:e.clientY}; moved=0;}
   renderer.domElement.setPointerCapture(e.pointerId);});
 renderer.domElement.addEventListener("pointermove",e=>{
+  if(!pts.has(e.pointerId))return;
+  pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pts.size>=2&&pinch){
+    const s=spread();
+    zoomBy((pinch.d-s.d)*0.55);
+    /* the midpoint sliding is a two-finger pan */
+    const mx=s.x-pinch.x, my=s.y-pinch.y;
+    if(mode==="orbit"){
+      const k=radius*0.0016;
+      panX-=Math.cos(theta)*mx*k - Math.sin(theta)*my*k;
+      panZ+=Math.sin(theta)*mx*k + Math.cos(theta)*my*k;
+    }else{ wx-=Math.cos(yaw)*mx*0.012; wz+=Math.sin(yaw)*mx*0.012;
+           wx+=Math.sin(yaw)*my*0.012; wz+=Math.cos(yaw)*my*0.012; }
+    pinch=s; moved=99; frame(); return;
+  }
   if(!drag)return; const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
   moved+=Math.abs(dx)+Math.abs(dy); drag={x:e.clientX,y:e.clientY};
   if(mode==="orbit"){theta-=dx*.006; phi=Math.max(.12,Math.min(1.52,phi-dy*.005));}
   else{yaw-=dx*.004; pitch=Math.max(-.9,Math.min(.8,pitch-dy*.004));}
   frame();});
 ["pointerup","pointercancel","pointerleave"].forEach(t=>
-  renderer.domElement.addEventListener(t,()=>{drag=null}));
+  renderer.domElement.addEventListener(t,e=>{
+    pts.delete(e.pointerId);
+    if(pts.size<2) pinch=null;
+    if(pts.size===0) drag=null;}));
 renderer.domElement.addEventListener("wheel",e=>{e.preventDefault();
   if(mode==="orbit") radius=Math.max(20,Math.min(360,radius+e.deltaY*.12));
   else{const s=e.deltaY*.004; wx-=Math.sin(yaw)*s*-1; wz-=Math.cos(yaw)*s*-1;}
@@ -881,7 +963,7 @@ function setMode(m){mode=m;
   document.getElementById("hint").textContent = m==="orbit"
     ? "Drag to orbit · scroll to zoom · click a wall to paint it"
     : "Drag to look · WASD or arrows to move · click a wall to paint it";
-  frame();}
+  padVis(); frame();}
 document.getElementById("sun").oninput=e=>{hour=+e.target.value;sunState(hour);frame();};
 document.getElementById("north").oninput=e=>{northDeg=+e.target.value||0;sunState(hour);frame();};
 document.getElementById("hGf").oninput=e=>{H.gf=+e.target.value||3.0;build();frame();};
@@ -912,7 +994,31 @@ document.getElementById("copy").onclick=()=>{
   navigator.clipboard.writeText(txt).then(()=>{b.textContent="Copied";
     setTimeout(()=>b.textContent="Copy painted spec",1500);},()=>{b.textContent="Copy failed";});
 };
+/* ---- mobile: bottom sheet and thumb pad -------------------------------- */
+const sheet=document.querySelector("aside"), sheetBtn=document.getElementById("sheetBtn");
+sheetBtn.onclick=()=>{
+  const open=sheet.classList.toggle("open");
+  sheetBtn.setAttribute("aria-expanded",open?"true":"false");
+  sheetBtn.textContent=open?"Close":"Controls";
+  setTimeout(resize,240);           /* the stage keeps its size, but be safe */
+};
+/* A phone has no keyboard, so walk mode needs somewhere to press. The pad only
+   appears on small screens, and only while walking. */
+const pad=document.getElementById("pad");
+function padVis(){pad.classList.toggle("on",mode==="walk");}
+const step=(fx,fz)=>{const s=.42;
+  wx+=Math.sin(yaw)*s*fz+Math.cos(yaw)*s*fx;
+  wz+=Math.cos(yaw)*s*fz-Math.sin(yaw)*s*fx; frame();};
+[["mF",0,-1],["mB",0,1],["mL",-1,0],["mR",1,0]].forEach(([id,fx,fz])=>{
+  const b=document.getElementById(id); let t=null;
+  const go=e=>{e.preventDefault(); step(fx,fz); t=setInterval(()=>step(fx,fz),110);};
+  const stop=()=>{if(t){clearInterval(t);t=null;}};
+  b.addEventListener("pointerdown",go);
+  ["pointerup","pointercancel","pointerleave"].forEach(k=>b.addEventListener(k,stop));
+});
+
 addEventListener("resize",resize);
+addEventListener("orientationchange",()=>setTimeout(resize,220));
 build(); sunState(13); resize();
 </script>
 </body>
