@@ -744,6 +744,12 @@ for key, (lo, hi, known_w) in PLANS.items():
     wl = [l for l in lines if l.get('stroking_color') in (GRAY, 0, (0.0, 0.0, 0.0)) and inb(l)]
     rl = [l for l in lines if l.get('stroking_color') == RED and inb(l)]
     rc = [c for c in curves if c.get('stroking_color') == RED and inb(c)]
+    # Door swing arcs. A door is drawn as a leaf sitting in the wall thickness
+    # plus a quarter-circle arc; the leaf looks exactly like a window's glazing
+    # line, so without the arc every door gets built as a window. They come out
+    # as near-square bounding boxes 500-1600 mm across.
+    gc = [c for c in curves
+          if c.get('stroking_color') in (GRAY, 0, (0.0, 0.0, 0.0)) and inb(c)]
     rr = [r for r in page.rects if r.get('stroking_color') == RED and inb(r)]
 
     xs = [v for l in wl for v in (l['x0'], l['x1'])]
@@ -988,6 +994,30 @@ for key, (lo, hi, known_w) in PLANS.items():
     wins, walls = openings(walls)
     print('   %s: %d window openings, %d glazing lines pulled out of the walls'
           % (key, len(wins), n_pre - len(walls)))
+
+    # Separate doors from windows using the swing arcs. An opening with an arc
+    # starting at its edge, of matching width, is a door: it runs to the floor
+    # and has no glass.
+    arcs = []
+    for c in gc:
+        aw, ah = (c['x1'] - c['x0']) * scale, (c['bottom'] - c['top']) * scale
+        if 450 < aw < 1700 and 450 < ah < 1700 and abs(aw - ah) < max(aw, ah) * 0.35:
+            arcs.append(((c['x0'] - x0) * scale, (c['top'] - y0) * scale, aw, ah))
+    n_door = 0
+    for q in wins:
+        span = q['b'] - q['a']
+        for ax, az, aw, ah in arcs:
+            reach = aw if q['o'] == 'v' else ah
+            if abs(reach - span) > max(reach, span) * 0.30:
+                continue
+            near_start = min(abs((az if q['o'] == 'v' else ax) - q['a']),
+                             abs((az + ah if q['o'] == 'v' else ax + aw) - q['b']))
+            across = abs((ax if q['o'] == 'v' else az) - q['c'])
+            if near_start < 150 and across < 1400:
+                q['door'] = True
+                n_door += 1
+                break
+    print('   %s: %d of those are doors (matched to a swing arc)' % (key, n_door))
 
     # NOTE: an earlier version patched a wall across x 2805..3875 at z 13125 on
     # the first floor, to close what looked like a hole in the tatami bedroom.
@@ -1533,7 +1563,7 @@ function build(){
           if((q.o==="h")!==horiz) return;
           if(Math.abs(q.c-c)>q.t/2+30) return;
           const a=Math.max(q.a,s0), b=Math.min(q.b,s1);
-          if(b-a>200) cuts.push([a,b,q.b-q.a]);
+          if(b-a>200) cuts.push([a,b,q.b-q.a,!!q.door]);
         });
         cuts.sort((p,q)=>p[0]-q[0]);
       }
@@ -1567,6 +1597,16 @@ function build(){
       cuts.forEach(cut=>{
         if(cut[0]>at) piece(at,cut[0],0,ht,solid,true);
         /* a wide opening is a glazed door to a terrace, so it runs to the floor */
+        /* a door is clear to the floor with no glass, just a head over it */
+        if(cut[3]){
+          const dh=Math.min(2.10,ht-0.15);
+          piece(cut[0],cut[1],dh,ht,solid,true);
+          piece(cut[0],cut[0]+45,0,dh,frameM,false);
+          piece(cut[1]-45,cut[1],0,dh,frameM,false);
+          piece(cut[0],cut[1],dh-0.05,dh,frameM,false);
+          at=cut[1];
+          return;
+        }
         const sill=(cut[2]>=2000)?0.05:0.90, head=Math.min(2.40,ht-0.15);
         piece(cut[0],cut[1],0,sill,solid,true);
         piece(cut[0],cut[1],head,ht,solid,true);
