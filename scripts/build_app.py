@@ -1030,6 +1030,16 @@ for key, (lo, hi, known_w) in PLANS.items():
                 break
     print('   %s: %d of those are doors (matched to a swing arc)' % (key, n_door))
 
+    if key == 'ff':
+        # Client asked for a door here. The drawing does not show one, so this
+        # is added, not extracted. It goes in the 155 mm band at x 5310/5465
+        # (the wall between the tatami bedroom and the room east of it), near
+        # the top of that wall where the client marked it. Standard internal
+        # leaf, 900 wide; the head height comes from the door renderer at 2100.
+        wins.append({'o': 'v', 'c': 5387.5, 'a': 9900.0, 'b': 10800.0,
+                     't': 155.0, 'door': True})
+        print('   ff: added a 900 mm door at x 5388, z 9900..10800 (client)')
+
     # NOTE: an earlier version patched a wall across x 2805..3875 at z 13125 on
     # the first floor, to close what looked like a hole in the tatami bedroom.
     # It is not a hole. The drawing breaks the wall there because it is a
