@@ -107,6 +107,9 @@ sun tracks across an assumed orientation and the room-by-room light story will b
 <div class="row"><label for="furn">Furniture</label><select id="furn">
 <option value="2">3D massing</option><option value="1">Outline only</option>
 <option value="0">Hide</option></select></div>
+<div class="row"><label for="glow">Step LEDs</label>
+<input type="range" id="glow" min="0" max="250" step="5" value="100">
+<span class="stat" id="glowVal">100%</span></div>
 <p class="note" id="meta"></p></div>
 <div class="grp"><h2>Spec</h2><button class="spec" id="copy">Copy painted spec</button></div>
 </aside>
@@ -139,6 +142,17 @@ const CX={}, CZ={};
 for(const k in PLAN){ CX[k]=PLAN[k].w/2000; CZ[k]=PLAN[k].d/2000; }
 
 const wallMeshes=[];
+/* Step-LED materials, with the opacity they were authored at. The slider
+   scales them live: changing a material's opacity needs no rebuild, so the
+   control stays smooth while dragging. */
+const glowMats=[];
+let glowAmt=1;
+function applyGlow(){
+  glowMats.forEach(e=>{
+    e.mat.opacity=Math.min(1,e.base*glowAmt);
+    e.mat.visible=glowAmt>0.001;
+  });
+}
 
 /* Half-turn stair, built from the plan's own nosing lines.
    Both flights run along X and stop at x_turn; the turn is the strip at the
@@ -187,9 +201,12 @@ function buildStair(g,P,ht){
      stacking high opacities in one place clips to white however warm the
      colour is. More glow comes from spreading them wider at LOWER opacity, not
      from piling them up. depthWrite off or they occlude each other. */
-  const glowM=[0.34,0.24,0.15,0.09,0.05].map(o=>new THREE.MeshBasicMaterial({
-    color:new THREE.Color("#ff8f22"),transparent:true,opacity:o,
-    blending:THREE.AdditiveBlending,depthWrite:false}));
+  const glowM=[0.34,0.24,0.15,0.09,0.05].map(o=>{
+    const m=new THREE.MeshBasicMaterial({color:new THREE.Color("#ff8f22"),
+      transparent:true,opacity:o,blending:THREE.AdditiveBlending,
+      depthWrite:false});
+    glowMats.push({mat:m,base:o});
+    return m;});
   const HALO=[[0.09,1.05],[0.18,1.10],[0.32,1.16],[0.50,1.24],[0.74,1.34]];
   steps.forEach((s,si)=>{
     s.idx=si;
@@ -450,7 +467,7 @@ function buildGuard(g,P){
 function build(){
   while(root.children.length){const c=root.children.pop();
     if(c.geometry)c.geometry.dispose(); if(c.material)c.material.dispose();}
-  wallMeshes.length=0;
+  wallMeshes.length=0; glowMats.length=0;
   let base=0;
   ["gf","ff"].forEach(k=>{
     const P=PLAN[k]; if(!P) return;
@@ -612,6 +629,7 @@ function build(){
     root.add(g);
   });
   applyFloors();
+  applyGlow();
   document.getElementById("meta").textContent=
     "Ground "+PLAN.gf.w+" x "+PLAN.gf.d+" mm, "+PLAN.gf.walls.length+" wall faces. First "+
     PLAN.ff.w+" x "+PLAN.ff.d+" mm, "+PLAN.ff.walls.length+" wall faces. Scale recovered from "+
@@ -725,6 +743,10 @@ document.getElementById("north").oninput=e=>{northDeg=+e.target.value||0;sunStat
 document.getElementById("hGf").oninput=e=>{H.gf=+e.target.value||3.0;build();frame();};
 document.getElementById("hFf").oninput=e=>{H.ff=+e.target.value||3.0;build();frame();};
 document.getElementById("furn").onchange=()=>{build();frame();};
+document.getElementById("glow").oninput=e=>{
+  glowAmt=(+e.target.value)/100;
+  document.getElementById("glowVal").textContent=e.target.value+"%";
+  applyGlow(); frame();};
 document.getElementById("copy").onclick=()=>{
   /* walls split around a window contribute several meshes; count each wall once */
   const tally={}, seen=new Set();
