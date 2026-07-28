@@ -1166,6 +1166,18 @@ for key, (lo, hi, known_w) in PLANS.items():
         # breaks at z 14715..15970 for the arched opening. Rendering the four
         # lines as walls turned the whole thing into a 3 m solid partition.
         # Strip them and rebuild as a screen with an arch over the gap.
+        # The stub wall the client wants replaced by the appliance cabinet.
+        # Both lines go: they sit 25 mm apart, so removing only the one that
+        # was pointed at would leave the other standing as a wall.
+        KILL = [(14370.0, 0.0, 950.0), (14395.0, 150.0, 950.0)]
+        n0 = len(walls)
+        walls = [w for w in walls if not any(
+            abs(w[1] - w[3]) < 1 and abs(w[1] - c) < 4
+            and min(w[0], w[2]) >= a - 4 and max(w[0], w[2]) <= b + 4
+            for c, a, b in KILL)]
+        print('   gf: removed %d wall lines for the appliance cabinet'
+              % (n0 - len(walls)))
+
         SCREEN_X = (4490.0, 4510.0, 4620.0, 4640.0)
         n_before = len(walls)
         walls = [w for w in walls
@@ -1240,6 +1252,14 @@ for key, (lo, hi, known_w) in PLANS.items():
                           and abs(b[2] - 3040) < 60 and abs(b[3] - 15600) < 60)]
         if n_before != len(furn3d):
             print('   gf: kitchen island suppressed at the client request')
+
+        # Client: take out the stub wall at z 14370/14395 and stand a
+        # full-height cabinet there with a fridge and an oven, per the interior
+        # render. The appliances are authored, not extracted: the floor plan
+        # carries no appliance symbols anywhere near here.
+        furn3d.append([150.0, 14395.0, 950.0, 14995.0,
+                       [[150.0, 14395.0, 950.0, 14995.0]], 'applbay'])
+        print('   gf: appliance cabinet added at x 150..950, z 14395..14995')
 
     # Client instruction about one room, not an extraction problem, so it reads
     # as one. The balcony is to be furnished with the sofa alone: the armchairs
@@ -1485,6 +1505,8 @@ const wallMeshes=[];
    scales them live: changing a material's opacity needs no rebuild, so the
    control stays smooth while dragging. */
 const glowMats=[];
+/* every mesh belonging to a furniture piece, so it can be picked and measured */
+const furnMeshes=[];
 let glowAmt=1;
 function applyGlow(){
   glowMats.forEach(e=>{
@@ -1621,7 +1643,8 @@ function buildStair(g,P,ht){
    a small dark/green accent. Blocks are massing for scale and occlusion, not a
    furnishing proposal; the plan carries no furniture schedule. */
 const JAPANDI={oak:"#cbb08a",oakDark:"#a8907f",linen:"#dbd4c9",
-               oat:"#e3d7c3",char:"#4c4c49",sage:"#a6ac94"};
+               oat:"#e3d7c3",char:"#4c4c49",sage:"#a6ac94",
+               steel:"#b9bcbd"};   /* brushed appliance fronts */
 function buildFurniture(g,P){
   const M={}; for(const k in JAPANDI)
     M[k]=new THREE.MeshLambertMaterial({color:new THREE.Color(JAPANDI[k])});
@@ -1629,10 +1652,16 @@ function buildFurniture(g,P){
   /* One height for every piece of tall joinery, so a cupboard and the niche
      next to it line up. They were 2.07 and 2.34, which stepped where they met. */
   const TALLH=2.35;
+  P.__h=P.__h||{};   /* measured height per piece, filled in as each is built */
+  /* `cur` is the piece being built; every mesh gets tagged with it so a click
+     anywhere on a sofa selects the sofa, not the cushion it happened to hit. */
+  let cur=null, curTop=0;
+  const tag=o=>{if(cur){o.userData.piece=cur; furnMeshes.push(o);}
+    g.add(o); return o;};
   const box=(w,h,d,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);
-    o.position.set(x,y,z); g.add(o);};
+    o.position.set(x,y,z); curTop=Math.max(curTop,y+h/2); return tag(o);};
   const cyl=(r,h,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.CylinderGeometry(r,r*0.82,h,14),m);
-    o.position.set(x,y,z); g.add(o);};
+    o.position.set(x,y,z); curTop=Math.max(curTop,y+h/2); return tag(o);};
 
   /* Which way a run faces: away from the wall it stands against, taken as
      away from the nearer edge of the plan. ax true means the run lies along
@@ -1683,6 +1712,7 @@ function buildFurniture(g,P){
                                  ||b[5]==="coffeeround"||b[5]==="bed"||b[5]==="desk")
     .map(b=>({x:((b[0]+b[2])/2-P.w/2)/1000, z:((b[1]+b[3])/2-P.d/2)/1000}));
   P.furn3d.forEach((b,i)=>{
+    cur=b; curTop=0;
     const tier=b[5];
     /* b[4] is the piece's real footprint, merged rectangles rather than one box,
        so an L stays an L. Carcass parts repeat per rectangle; the accents that
@@ -1702,6 +1732,46 @@ function buildFurniture(g,P){
         box(r.w,0.72,r.d,r.cx,0.46,r.cz,M.oak);
         box(r.w,0.04,r.d,r.cx,0.84,r.cz,M.oat);
         underLED(r,0.80);             /* wash under the worktop, as rendered */
+      });
+
+    }else if(tier==="applbay"){ /* tall run: oak doors, then a recessed bay
+                                   holding a fridge with an oven stack above */
+      R.forEach(r=>{
+        const s=front(r), steelM=M.steel, darkM=M.char;
+        const at=(u,v)=>[r.cx+(s.ax?u:0)+s.fx*v, r.cz+(s.ax?0:u)+s.fz*v];
+        const L=s.len, DEP=s.dep, BAY=Math.min(0.62,L*0.52), DOOR=L-BAY;
+        const across=(w)=>s.ax?[w,DEP]:[DEP,w];
+        /* plinth under the whole run */
+        box(sh(r.w,0.06),0.09,sh(r.d,0.06),r.cx,0.045,r.cz,M.oakDark);
+        /* door section, at the far end from the bay */
+        const dc=at(-L/2+DOOR/2,0), dw=across(DOOR);
+        box(dw[0],TALLH-0.14,dw[1],dc[0],0.09+(TALLH-0.14)/2,dc[1],M.oak);
+        const nl=Math.max(1,Math.round(DOOR/0.62));
+        for(let j=1;j<nl;j++){
+          const p=at(-L/2+DOOR*j/nl,0), jj=across(0.016);
+          box(s.ax?0.016:DEP+0.006,TALLH-0.24,s.ax?DEP+0.006:0.016,
+              p[0],0.09+(TALLH-0.24)/2,p[1],M.oakDark);
+        }
+        /* carcass around the bay, with the bay itself set back */
+        const bc=at(L/2-BAY/2,0), bw=across(BAY);
+        box(bw[0],TALLH-0.14,bw[1],bc[0],0.09+(TALLH-0.14)/2,bc[1],M.oak);
+        const RE=0.14;                       /* how far the bay is recessed */
+        const bin=at(L/2-BAY/2,-RE/2), inw=across(BAY-0.10);
+        box(inw[0]-(s.ax?0:RE),TALLH-0.34,inw[1]-(s.ax?RE:0),
+            bin[0],0.20+(TALLH-0.34)/2,bin[1],darkM);
+        /* fridge in the lower half, oven and microwave stacked above */
+        const fw=across(BAY-0.16);
+        const fp=at(L/2-BAY/2,-RE+0.03);
+        box(fw[0]-(s.ax?0:RE),1.02,fw[1]-(s.ax?RE:0),fp[0],0.70,fp[1],steelM);
+        box(fw[0]-(s.ax?0:RE),0.42,fw[1]-(s.ax?RE:0),fp[0],1.44,fp[1],darkM);
+        box(fw[0]-(s.ax?0:RE),0.34,fw[1]-(s.ax?RE:0),fp[0],1.86,fp[1],darkM);
+        /* control strips, so the appliances read as appliances */
+        [1.63,2.01].forEach(y=>{
+          const cw=across(BAY-0.24), cp=at(L/2-BAY/2,-RE+0.06);
+          box(cw[0]-(s.ax?0:RE),0.035,cw[1]-(s.ax?RE:0),cp[0],y,cp[1],steelM);});
+        /* warm wash inside the bay, on the same slider as every other LED */
+        strip(r,s,TALLH-0.30,BAY*0.8,RE+0.02);
+        box(r.w,0.05,r.d,r.cx,TALLH-0.025,r.cz,M.oat);   /* cornice */
       });
 
     }else if(tier==="niche"){   /* arched recess: sink, lit shelves, base units */
@@ -1932,7 +2002,7 @@ function buildGuard(g,P){
 function build(){
   while(root.children.length){const c=root.children.pop();
     if(c.geometry)c.geometry.dispose(); if(c.material)c.material.dispose();}
-  wallMeshes.length=0; glowMats.length=0;
+  wallMeshes.length=0; glowMats.length=0; furnMeshes.length=0;
   let base=0;
   ["gf","ff"].forEach(k=>{
     const P=PLAN[k]; if(!P) return;
