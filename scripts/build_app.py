@@ -94,8 +94,8 @@ def clip_to_walls(pieces, walls, tol=170.0):
 
     out, n_trim = [], 0
     for b in pieces:
-        if b[-1] not in FITTED:
-            out.append(b)
+        if b[5] not in FITTED:      # index 5, not -1: pieces may carry a
+            out.append(b)           # facing override at index 6
             continue
         rects = []
         for r in b[4]:
@@ -108,7 +108,7 @@ def clip_to_walls(pieces, walls, tol=170.0):
             continue
         xs = [v for r in rects for v in (r[0], r[2])]
         zs = [v for r in rects for v in (r[1], r[3])]
-        out.append([min(xs), min(zs), max(xs), max(zs), rects, b[-1]])
+        out.append([min(xs), min(zs), max(xs), max(zs), rects] + list(b[5:]))
     return out, n_trim
 
 
@@ -1261,10 +1261,14 @@ for key, (lo, hi, known_w) in PLANS.items():
         furn3d = [b for b in furn3d
                   if not (abs(b[0] - 145) < 60 and abs(b[1] - 13290) < 60
                           and abs(b[2] - 2395) < 60 and abs(b[3] - 13940) < 60)]
-        furn3d.append([150.0, 13290.0, 750.0, 14310.0,
-                       [[150.0, 13290.0, 750.0, 14310.0]], 'cupboard'])
+        # Both run along the north wall and open south into the room. The
+        # sixth element forces that: front() otherwise guesses facing from the
+        # nearest plan edge, which puts these two door-first into the wall they
+        # stand against.
+        furn3d.append([150.0, 13290.0, 1170.0, 13890.0,
+                       [[150.0, 13290.0, 1170.0, 13890.0]], 'cupboard', 'z+'])
         furn3d.append([2645.0, 13290.0, 3245.0, 13890.0,
-                       [[2645.0, 13290.0, 3245.0, 13890.0]], 'fridge'])
+                       [[2645.0, 13290.0, 3245.0, 13890.0]], 'fridge', 'z+'])
         print('   gf: bench replaced by a full-height cabinet on the west wall,'
               ' fridge added at x 2645..3245')
 
@@ -1673,7 +1677,14 @@ function buildFurniture(g,P){
   /* Which way a run faces: away from the wall it stands against, taken as
      away from the nearer edge of the plan. ax true means the run lies along
      X, so it opens in Z. */
-  const front=r=>{
+  const front=(r,force)=>{
+    /* an explicit facing wins: the guess below reads the nearest plan edge,
+       which is wrong for a run standing against an internal wall */
+    if(force){
+      const ax=(force[0]==="z");
+      return ax ? {ax:true, fx:0, fz:(force[1]==="+"?1:-1), dep:r.d, len:r.w}
+                : {ax:false,fx:(force[1]==="+"?1:-1), fz:0, dep:r.w, len:r.d};
+    }
     const ax=r.w>=r.d;
     /* fx/fz point AWAY from the wall the run stands against, so out into the
        room. The wall is the nearer edge of the plan, hence the sign flip: a
@@ -1697,7 +1708,7 @@ function buildFurniture(g,P){
     [[0.07,1.6],[0.15,2.6]].forEach((q,qi)=>
       box(s.ax?len:q[0],q[0],s.ax?q[0]:len,x,y-q[0]*0.35,z,kGlow[qi]));
   };
-  const underLED=(r,y)=>{const s=front(r); strip(r,s,y,s.len*0.9,0.03);};
+  const underLED=(r,y,f)=>{const s=front(r,f); strip(r,s,y,s.len*0.9,0.03);};
   const shelfLED=(r,s,y)=>strip(r,s,y-0.03,s.len*0.8,0.30);
   /* arch head over a recess, as short chords following the curve */
   const arcRing=(r,s,run,top,th,m,off)=>{
@@ -1720,7 +1731,7 @@ function buildFurniture(g,P){
     .map(b=>({x:((b[0]+b[2])/2-P.w/2)/1000, z:((b[1]+b[3])/2-P.d/2)/1000}));
   P.furn3d.forEach((b,i)=>{
     cur=b; curTop=0;
-    const tier=b[5];
+    const tier=b[5], FACE=b[6]||null;
     /* b[4] is the piece's real footprint, merged rectangles rather than one box,
        so an L stays an L. Carcass parts repeat per rectangle; the accents that
        only make sense once (a sofa back, a pillow) go on the largest. */
@@ -1738,12 +1749,12 @@ function buildFurniture(g,P){
         box(sh(r.w,0.10),0.10,sh(r.d,0.10),r.cx,0.05,r.cz,M.char);
         box(r.w,0.72,r.d,r.cx,0.46,r.cz,M.oak);
         box(r.w,0.04,r.d,r.cx,0.84,r.cz,M.oat);
-        underLED(r,0.80);             /* wash under the worktop, as rendered */
+        underLED(r,0.80,FACE);             /* wash under the worktop, as rendered */
       });
 
     }else if(tier==="fridge"){  /* fridge with a cabinet over it, to TALLH */
       R.forEach(r=>{
-        const s=front(r), FH=1.80;
+        const s=front(r,FACE), FH=1.80;
         box(sh(r.w,0.06),0.09,sh(r.d,0.06),r.cx,0.045,r.cz,M.oakDark);
         /* body, held just inside the carcass line so the surround reads */
         box(sh(r.w,0.04),FH-0.09,sh(r.d,0.04),r.cx,0.09+(FH-0.09)/2,r.cz,M.steel);
@@ -1761,7 +1772,7 @@ function buildFurniture(g,P){
     }else if(tier==="applbay"){ /* tall run: oak doors, then a recessed bay
                                    holding a fridge with an oven stack above */
       R.forEach(r=>{
-        const s=front(r), steelM=M.steel, darkM=M.char;
+        const s=front(r,FACE), steelM=M.steel, darkM=M.char;
         const at=(u,v)=>[r.cx+(s.ax?u:0)+s.fx*v, r.cz+(s.ax?0:u)+s.fz*v];
         const L=s.len, DEP=s.dep, BAY=Math.min(0.62,L*0.52), DOOR=L-BAY;
         const across=(w)=>s.ax?[w,DEP]:[DEP,w];
@@ -1800,13 +1811,13 @@ function buildFurniture(g,P){
 
     }else if(tier==="niche"){   /* arched recess: sink, lit shelves, base units */
       R.forEach(r=>{
-        const s=front(r), rh=TALLH-0.86, ry=0.86+rh/2;
+        const s=front(r,FACE), rh=TALLH-0.86, ry=0.86+rh/2;
         /* place something at (u along the run, v out towards the open face) */
         const at=(u,v)=>[r.cx+(s.ax?u:0)+s.fx*v, r.cz+(s.ax?0:u)+s.fz*v];
         box(sh(r.w,0.10),0.10,sh(r.d,0.10),r.cx,0.05,r.cz,M.char);
         box(r.w,0.72,r.d,r.cx,0.46,r.cz,M.oak);           /* base units */
         box(r.w,0.04,r.d,r.cx,0.84,r.cz,M.oat);           /* worktop */
-        underLED(r,0.80);
+        underLED(r,0.80,FACE);
         /* Stone back of the recess: a panel at the REAR, thin across the run.
            It used to be sized by shrinking the run instead of the depth, so it
            filled the whole recess solid and buried the arch behind it. */
