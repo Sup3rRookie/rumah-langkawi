@@ -1253,13 +1253,20 @@ for key, (lo, hi, known_w) in PLANS.items():
         if n_before != len(furn3d):
             print('   gf: kitchen island suppressed at the client request')
 
-        # Client: take out the stub wall at z 14370/14395 and stand a
-        # full-height cabinet there with a fridge and an oven, per the interior
-        # render. The appliances are authored, not extracted: the floor plan
-        # carries no appliance symbols anywhere near here.
-        furn3d.append([150.0, 14395.0, 950.0, 14995.0,
-                       [[150.0, 14395.0, 950.0, 14995.0]], 'applbay'])
-        print('   gf: appliance cabinet added at x 150..950, z 14395..14995')
+        # Client corrections to this corner. What the extraction read as a
+        # bench along the north wall is not a bench: it is a full-height
+        # cabinet run down the west wall, plus a fridge with a cabinet over it
+        # against the short stub at x 3245. Appliances are authored, not
+        # extracted; the plan carries no appliance symbols here.
+        furn3d = [b for b in furn3d
+                  if not (abs(b[0] - 145) < 60 and abs(b[1] - 13290) < 60
+                          and abs(b[2] - 2395) < 60 and abs(b[3] - 13940) < 60)]
+        furn3d.append([150.0, 13290.0, 750.0, 14310.0,
+                       [[150.0, 13290.0, 750.0, 14310.0]], 'cupboard'])
+        furn3d.append([2645.0, 13290.0, 3245.0, 13890.0,
+                       [[2645.0, 13290.0, 3245.0, 13890.0]], 'fridge'])
+        print('   gf: bench replaced by a full-height cabinet on the west wall,'
+              ' fridge added at x 2645..3245')
 
     # Client instruction about one room, not an extraction problem, so it reads
     # as one. The balcony is to be furnished with the sofa alone: the armchairs
@@ -1732,6 +1739,23 @@ function buildFurniture(g,P){
         box(r.w,0.72,r.d,r.cx,0.46,r.cz,M.oak);
         box(r.w,0.04,r.d,r.cx,0.84,r.cz,M.oat);
         underLED(r,0.80);             /* wash under the worktop, as rendered */
+      });
+
+    }else if(tier==="fridge"){  /* fridge with a cabinet over it, to TALLH */
+      R.forEach(r=>{
+        const s=front(r), FH=1.80;
+        box(sh(r.w,0.06),0.09,sh(r.d,0.06),r.cx,0.045,r.cz,M.oakDark);
+        /* body, held just inside the carcass line so the surround reads */
+        box(sh(r.w,0.04),FH-0.09,sh(r.d,0.04),r.cx,0.09+(FH-0.09)/2,r.cz,M.steel);
+        /* door split down the front face, and a handle line */
+        const fp=[r.cx+s.fx*(s.dep/2-0.012), r.cz+s.fz*(s.dep/2-0.012)];
+        box(s.ax?sh(r.w,0.06):0.014,0.016,s.ax?0.014:sh(r.d,0.06),
+            fp[0],FH*0.62,fp[1],M.char);
+        box(s.ax?0.05:0.014,0.34,s.ax?0.014:0.05,fp[0],FH*0.78,fp[1],M.char);
+        /* cabinet on top, oak, running up to the same head as the rest */
+        box(r.w,TALLH-FH-0.05,r.d,r.cx,FH+(TALLH-FH-0.05)/2,r.cz,M.oak);
+        box(r.w,0.05,r.d,r.cx,TALLH-0.025,r.cz,M.oat);
+        strip(r,s,FH-0.04,(s.ax?r.w:r.d)*0.8,0.03);
       });
 
     }else if(tier==="applbay"){ /* tall run: oak doors, then a recessed bay
