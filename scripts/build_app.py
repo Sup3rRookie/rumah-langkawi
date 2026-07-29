@@ -840,6 +840,100 @@ def massing(furn, n_line, keepout=None, scribble=(), tol=30.0):
     return [p[:6] for p in out]
 
 
+# Sealing span for exterior(). Doors and windows leave the wall lines broken,
+# and the widest break the flood has to be held at is 1550 mm, on the ground
+# floor west wall. Past 2845 mm it seals the first floor balcony off from the
+# sky and the balcony starts reading as a room, so anything in 1600..2800 gives
+# the same answer and this sits in the middle.
+SEAL = 1900.0
+SIDE = 95.0          # how far off a wall line the two side samples are taken
+
+
+def exterior(walls, w_mm, d_mm):
+    """Flag the wall lines that face outdoors, one boolean per wall.
+
+    The client only wants to paint inside the house, so a floor or whole house
+    sweep has to know which faces are the facade. Testing against the plan's
+    bounding box does not work: the outline is a staircase, and real perimeter
+    walls sit at x=600 and z=1275 with nothing but yard beyond them.
+
+    So the linework decides. Rasterise the walls, seal the door and window
+    breaks so the outside cannot leak in, flood from the border, and whatever
+    the flood reaches is outdoors. Then sample both sides of every wall line.
+    A wall band is drawn as two parallel lines 150 mm apart and each line is a
+    separate mesh, so the pair has to split: the outer line has open sky on one
+    side, the inner line only ever sees the cavity and the room.
+
+    Where the outline steps, one merged line can run from outdoors to indoors.
+    There is one flag per line, so those go by majority and the short outdoor
+    return still takes paint. Three lines on the first floor are like that.
+    """
+    from collections import defaultdict
+    pad = 8
+    C = int(w_mm / CELL) + 2 * pad + 2
+    R = int(d_mm / CELL) + 2 * pad + 2
+
+    seal = []
+    for horiz in (True, False):
+        runs = defaultdict(list)
+        for s in walls:
+            if horiz and abs(s[1] - s[3]) < 1:
+                runs[s[1]].append((min(s[0], s[2]), max(s[0], s[2])))
+            elif not horiz and abs(s[0] - s[2]) < 1:
+                runs[s[0]].append((min(s[1], s[3]), max(s[1], s[3])))
+        for c, iv in runs.items():
+            iv.sort()
+            for i in range(len(iv) - 1):
+                a, b = iv[i][1], iv[i + 1][0]
+                if 0 < b - a <= SEAL:
+                    seal.append([a, c, b, c] if horiz else [c, a, c, b])
+
+    m = [bytearray(C) for _ in range(R)]
+    for s in walls + seal:
+        n = max(2, int(math.dist((s[0], s[1]), (s[2], s[3])) / (CELL / 2)) + 1)
+        for i in range(n + 1):
+            t = i / n
+            cx = int(math.floor((s[0] + (s[2] - s[0]) * t) / CELL)) + pad
+            cy = int(math.floor((s[1] + (s[3] - s[1]) * t) / CELL)) + pad
+            if 0 <= cy < R and 0 <= cx < C:
+                m[cy][cx] = 1
+    # A 150 mm cavity closed off is what tells the inner line of a wall band
+    # apart from the outer one, and a corner where two lines stop 50 mm short
+    # of each other is a hole the flood would pour through. Two passes of the
+    # 3x3 pair close both without fattening the walls.
+    solid = _erode(_erode(_dilate(_dilate(m, R, C), R, C), R, C), R, C)
+    enc = _enclosed(solid, R, C)
+
+    def outdoors(x, y):
+        cx = int(math.floor(x / CELL)) + pad
+        cy = int(math.floor(y / CELL)) + pad
+        if not (0 <= cy < R and 0 <= cx < C):
+            return True
+        return not enc[cy][cx]
+
+    ext = []
+    for s in walls:
+        dx, dy = s[2] - s[0], s[3] - s[1]
+        L = math.hypot(dx, dy)
+        if L < 1:
+            ext.append(False)
+            continue
+        ux, uy = dx / L, dy / L
+        # Skip the last 160 mm at each end: a sample taken at a corner lands in
+        # the wall it butts into and reports whatever is on the far side of it.
+        trim = min(160.0, L * 0.35)
+        span = L - 2 * trim
+        n = max(1, int(span / 200.0))
+        a = b = 0
+        for i in range(n + 1):
+            t = trim + span * i / n
+            px, py = s[0] + ux * t, s[1] + uy * t
+            if outdoors(px - uy * SIDE, py + ux * SIDE): a += 1
+            if outdoors(px + uy * SIDE, py - ux * SIDE): b += 1
+        ext.append(a * 2 > n + 1 or b * 2 > n + 1)
+    return ext
+
+
 # Room boxes, for painting a whole room at once. They overlap heavily (the
 # ground floor open plan is 86 m2 and encloses the others), so the app picks
 # the SMALLEST box containing the click, which resolves the nesting.
@@ -1301,7 +1395,13 @@ for key, (lo, hi, known_w) in PLANS.items():
     # it goes out decimated; massing above still works off the full set.
     overlay = [[round(s[0]), round(s[1]), round(s[2]), round(s[3])] for s in furn
                if math.dist((s[0], s[1]), (s[2], s[3])) >= 40]
-    data[key] = dict(w=w_mm, d=d_mm,
+    # Runs on the finished wall list: the screen, the balcony cut and the two
+    # client patches all change the envelope, so classifying earlier would read
+    # holes that are not there in the model.
+    ext = exterior(walls, w_mm, d_mm)
+    print('   %s: %d wall faces external, %d interior'
+          % (key, sum(ext), len(ext) - sum(ext)))
+    data[key] = dict(w=w_mm, d=d_mm, ext=ext,
                      walls=walls, furn=overlay, furn3d=furn3d, stair=stair,
                      well=well, guard=guard, align=align,
                      stair_below=stair_below, wins=wins, parapet=parapet,
@@ -2733,16 +2833,13 @@ renderer.domElement.addEventListener("click",e=>{
   const paint=m=>{m.material.color.set(P[2]); m.userData.code=P[0];};
   const f=hit.object.userData.floor;
 
-  /* Only ever paint what you can see from inside. The outermost lines of each
-     plan are the OUTSIDE faces of the external walls, and they are rendered
-     the same as any other, so a whole-house sweep used to paint the facade. */
+  /* Only ever paint what you can see from inside. Which faces are the facade
+     is worked out at build time, where the whole floor plate is available, and
+     shipped as PLAN[floor].ext alongside the walls. Clicking one wall still
+     paints it, facade or not, because that is a deliberate pick. */
   const inside=m=>{
-    const s=m.userData.seg, P=PLAN[m.userData.floor];
-    if(!s||!P) return true;
-    const e=60;
-    if(Math.abs(s[0]-s[2])<1)   return s[0]>e && s[0]<P.w-e;
-    if(Math.abs(s[1]-s[3])<1)   return s[1]>e && s[1]<P.d-e;
-    return true;
+    const q=PLAN[m.userData.floor];
+    return !(q&&q.ext&&q.ext[m.userData.idx]);
   };
   if(scope==="all"){ wallMeshes.forEach(m=>{if(inside(m))paint(m);}); }
   else if(scope==="floor"){
