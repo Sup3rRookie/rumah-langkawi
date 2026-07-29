@@ -160,6 +160,10 @@ sun tracks across an assumed orientation and the room-by-room light story will b
 <div class="row"><label for="furn">Furniture</label><select id="furn">
 <option value="2">3D massing</option><option value="1">Outline only</option>
 <option value="0">Hide</option></select></div>
+<div class="row"><label for="units">Units</label><select id="units">
+<option value="m">Metres</option><option value="mm">Millimetres</option>
+<option value="in">Inches</option></select></div>
+<p class="note" id="fsel">Tap any furniture to measure it.</p>
 <div class="row"><label for="glow">Step LEDs</label>
 <input type="range" id="glow" min="0" max="250" step="5" value="100">
 <span class="stat" id="glowVal">100%</span></div>
@@ -346,11 +350,11 @@ function buildFurniture(g,P){
   /* One height for every piece of tall joinery, so a cupboard and the niche
      next to it line up. They were 2.07 and 2.34, which stepped where they met. */
   const TALLH=2.35;
-  P.__h=P.__h||{};   /* measured height per piece, filled in as each is built */
   /* `cur` is the piece being built; every mesh gets tagged with it so a click
      anywhere on a sofa selects the sofa, not the cushion it happened to hit. */
   let cur=null, curTop=0;
-  const tag=o=>{if(cur){o.userData.piece=cur; furnMeshes.push(o);}
+  const tag=o=>{if(cur){o.userData.piece=cur; furnMeshes.push(o);
+      cur.h=Math.max(cur.h||0,curTop);}   /* tallest point, for the inspector */
     g.add(o); return o;};
   const box=(w,h,d,x,y,z,m)=>{const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);
     o.position.set(x,y,z); curTop=Math.max(curTop,y+h/2); return tag(o);};
@@ -899,6 +903,8 @@ function build(){
     }
     root.add(g);
   });
+  /* exposed so a non-clickable piece can be diagnosed from the console */
+  window.__model={walls:wallMeshes,furn:furnMeshes,cam:camera,rend:renderer};
   applyFloors();
   applyGlow();
   document.getElementById("meta").textContent=
@@ -997,14 +1003,51 @@ addEventListener("keydown",e=>{
   if(e.key==="ArrowLeft"||e.key==="a"){wx-=Math.cos(yaw)*s; wz+=Math.sin(yaw)*s;}
   if(e.key==="ArrowRight"||e.key==="d"){wx+=Math.cos(yaw)*s; wz-=Math.sin(yaw)*s;}
   frame();});
+/* ---- furniture inspector ----------------------------------------------- */
+const TIER_NAME={sofa:"Sofa",bed:"Bed",tatami:"Tatami platform",table:"Table",
+  coffee:"Coffee table",coffeeround:"Coffee table, round",chair:"Chair",
+  round:"Side table",bench:"Bench",desk:"Desk",plant:"Planter",rug:"Rug",
+  counter:"Worktop run",cupboard:"Full-height cabinet",niche:"Arched niche",
+  fridge:"Fridge with cabinet over",applbay:"Appliance cabinet"};
+let selPiece=null, selHelper=null, units="m";
+function fmtLen(mm){
+  if(units==="mm") return Math.round(mm)+" mm";
+  if(units==="in") return (mm/25.4).toFixed(1)+" in";
+  return (mm/1000).toFixed(2)+" m";
+}
+function selectPiece(b){
+  selPiece=b;
+  if(selHelper){scene.remove(selHelper); selHelper=null;}
+  const el=document.getElementById("fsel");
+  if(!b){el.textContent="Tap any furniture to measure it."; return;}
+  const bb=new THREE.Box3();
+  furnMeshes.forEach(m=>{if(m.userData.piece===b) bb.expandByObject(m);});
+  if(!bb.isEmpty()){
+    selHelper=new THREE.Box3Helper(bb,new THREE.Color("#ffcf8f"));
+    scene.add(selHelper);
+  }
+  const w=b[2]-b[0], d=b[3]-b[1], h=(b.h||0)*1000;
+  el.innerHTML="<b>"+(TIER_NAME[b[5]]||b[5])+"</b><br>"+
+    fmtLen(Math.max(w,d))+" &times; "+fmtLen(Math.min(w,d))+
+    " &times; "+fmtLen(h)+" high<br><span class=\"cap\">plan size is measured; "+
+    "height is the model's, not from the drawing</span>";
+}
+document.getElementById("units").onchange=e=>{units=e.target.value; selectPiece(selPiece);};
+
 const ray=new THREE.Raycaster(), mouse=new THREE.Vector2();
 renderer.domElement.addEventListener("click",e=>{
   if(moved>6)return;
   const r=renderer.domElement.getBoundingClientRect();
   mouse.x=((e.clientX-r.left)/r.width)*2-1; mouse.y=-((e.clientY-r.top)/r.height)*2+1;
   ray.setFromCamera(mouse,camera);
+  /* furniture first: if a piece is nearer than any wall, the click is a
+     measurement, not a paint stroke */
+  const fh=ray.intersectObjects(furnMeshes.filter(m=>m.parent.visible),false)[0];
   const hit=ray.intersectObjects(wallMeshes.filter(m=>m.parent.visible),false)[0];
-  if(!hit)return;
+  if(fh&&(!hit||fh.distance<hit.distance)){
+    selectPiece(fh.object.userData.piece); frame(); return;
+  }
+  if(!hit){ selectPiece(null); frame(); return; }
   const P=PALETTE[pick];
   /* shift still forces a whole floor, whatever the scope selector says */
   const scope=e.shiftKey?"floor":document.getElementById("scope").value;
