@@ -35,6 +35,9 @@ border-radius:2px;backdrop-filter:blur(6px)}
 .lbl{font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:var(--faint);margin-bottom:7px}
 .chip{height:34px;border-radius:2px;border:1px solid var(--line)}
 .cap{font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:5px}
+.rm{display:flex;justify-content:space-between;gap:10px;font-family:var(--mono);
+font-size:11px;color:var(--dim);padding:3px 0;border-bottom:1px solid var(--line)}
+.rm.hd{color:var(--bone);border-bottom-color:var(--line2);margin-top:9px;display:block}
 aside{flex:none;width:300px;border-left:1px solid var(--line);overflow-y:auto;padding:18px 20px 40px}
 .grp{margin-bottom:24px}
 .grp>h2{font-size:10px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;
@@ -161,13 +164,23 @@ sun tracks across an assumed orientation and the room-by-room light story will b
 <option value="2">3D massing</option><option value="1">Outline only</option>
 <option value="0">Hide</option></select></div>
 <div class="row"><label for="units">Units</label><select id="units">
-<option value="m">Metres</option><option value="mm">Millimetres</option>
-<option value="in">Inches</option></select></div>
+<option value="m">Metres</option><option value="ft">Feet</option>
+<option value="mm">Millimetres</option><option value="in">Inches</option>
+</select></div>
 <p class="note" id="fsel">Tap any furniture to measure it.</p>
+<div class="row"><label for="fedit">Layout</label>
+<button class="spec" id="fedit" aria-pressed="false">Move furniture: off</button></div>
+<div class="row" id="fdims" hidden><label for="fw">Size</label>
+<input type="number" id="fw" step="10" min="100"><span class="stat">&times;</span>
+<input type="number" id="fd" step="10" min="100"></div>
+<div class="row" id="fbtns" hidden><label>&nbsp;</label>
+<button class="spec" id="frot">Rotate 90&deg;</button>
+<button class="spec" id="frst">Reset all</button></div>
 <div class="row"><label for="glow">Step LEDs</label>
 <input type="range" id="glow" min="0" max="250" step="5" value="100">
 <span class="stat" id="glowVal">100%</span></div>
 <p class="note" id="meta"></p></div>
+<div class="grp"><h2>Rooms</h2><div id="rooms"></div></div>
 <div class="grp"><h2>Spec</h2><button class="spec" id="copy">Copy painted spec</button></div>
 </aside>
 </main>
@@ -961,10 +974,29 @@ const zoomBy=v=>{
   if(mode==="orbit") radius=Math.max(20,Math.min(360,radius+v));
   else{const s=v*.03; wx+=Math.sin(yaw)*s; wz+=Math.cos(yaw)*s;}
 };
+const groundAt=e=>{                 /* where a pointer meets the floor plane */
+  const r=renderer.domElement.getBoundingClientRect();
+  mouse.x=((e.clientX-r.left)/r.width)*2-1; mouse.y=-((e.clientY-r.top)/r.height)*2+1;
+  ray.setFromCamera(mouse,camera);
+  const p=new THREE.Vector3();
+  return ray.ray.intersectPlane(GPLANE,p)?p:null;
+};
 renderer.domElement.addEventListener("pointerdown",e=>{
   pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
-  if(pts.size===2){pinch=spread(); drag=null;}
-  else{drag={x:e.clientX,y:e.clientY}; moved=0;}
+  if(pts.size===2){pinch=spread(); drag=null; dragPiece=null;}
+  else{
+    drag={x:e.clientX,y:e.clientY}; moved=0;
+    if(editMode){
+      const r=renderer.domElement.getBoundingClientRect();
+      mouse.x=((e.clientX-r.left)/r.width)*2-1; mouse.y=-((e.clientY-r.top)/r.height)*2+1;
+      ray.setFromCamera(mouse,camera);
+      const f=ray.intersectObjects(furnMeshes.filter(m=>m.parent.visible),false)[0];
+      if(f){                        /* grab the piece, and stop it orbiting */
+        dragPiece=f.object.userData.piece; dragFrom=groundAt(e);
+        keepOriginal(dragPiece); selectPiece(dragPiece); editUI(); drag=null;
+      }
+    }
+  }
   renderer.domElement.setPointerCapture(e.pointerId);});
 renderer.domElement.addEventListener("pointermove",e=>{
   if(!pts.has(e.pointerId))return;
@@ -982,6 +1014,12 @@ renderer.domElement.addEventListener("pointermove",e=>{
            wx+=Math.sin(yaw)*my*0.012; wz+=Math.cos(yaw)*my*0.012; }
     pinch=s; moved=99; frame(); return;
   }
+  if(dragPiece){                    /* slide the meshes, commit on release */
+    const p=groundAt(e); if(!p||!dragFrom) return;
+    const dxw=p.x-dragFrom.x, dzw=p.z-dragFrom.z;
+    pieceMeshes(dragPiece).forEach(m=>{m.position.x+=dxw; m.position.z+=dzw;});
+    dragFrom=p; moved=99; frame(); return;
+  }
   if(!drag)return; const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
   moved+=Math.abs(dx)+Math.abs(dy); drag={x:e.clientX,y:e.clientY};
   if(mode==="orbit"){theta-=dx*.006; phi=Math.max(.12,Math.min(1.52,phi-dy*.005));}
@@ -991,7 +1029,25 @@ renderer.domElement.addEventListener("pointermove",e=>{
   renderer.domElement.addEventListener(t,e=>{
     pts.delete(e.pointerId);
     if(pts.size<2) pinch=null;
-    if(pts.size===0) drag=null;}));
+    if(pts.size===0){
+      drag=null;
+      if(dragPiece){
+        /* meshes were slid live; write the move into the plan and rebuild so
+           every derived part (LED strips, door leaves) follows. Snap to 10 mm,
+           since nobody quotes furniture to the millimetre. */
+        const b=dragPiece, m=pieceMeshes(b)[0];
+        if(m){
+          const P=PLAN[floorOf(b)], off=OFF[floorOf(b)]||0;
+          const bb=new THREE.Box3(); pieceMeshes(b).forEach(o=>bb.expandByObject(o));
+          const cx=((bb.min.x+bb.max.x)/2/SCALE-off)*1000+P.w/2;
+          const cz=((bb.min.z+bb.max.z)/2)/SCALE*1000+P.d/2;
+          const dx=Math.round((cx-(b[0]+b[2])/2)/10)*10;
+          const dz=Math.round((cz-(b[1]+b[3])/2)/10)*10;
+          if(dx||dz) nudge(b,dx,dz);
+        }
+        dragPiece=null; dragFrom=null; build(); selectPiece(b); editUI(); frame();
+      }
+    }}));
 renderer.domElement.addEventListener("wheel",e=>{e.preventDefault();
   if(mode==="orbit") radius=Math.max(20,Math.min(360,radius+e.deltaY*.12));
   else{const s=e.deltaY*.004; wx-=Math.sin(yaw)*s*-1; wz-=Math.cos(yaw)*s*-1;}
@@ -1013,7 +1069,16 @@ let selPiece=null, selHelper=null, units="m";
 function fmtLen(mm){
   if(units==="mm") return Math.round(mm)+" mm";
   if(units==="in") return (mm/25.4).toFixed(1)+" in";
+  if(units==="ft"){                       /* feet and inches, as trades quote */
+    const t=mm/25.4; let f=Math.floor(t/12), i=Math.round(t-f*12);
+    if(i===12){f++;i=0;}
+    return f+"' "+i+'"';
+  }
   return (mm/1000).toFixed(2)+" m";
+}
+function fmtArea(m2){
+  return units==="ft"||units==="in"
+    ? (m2*10.7639).toFixed(0)+" sq ft" : m2.toFixed(1)+" m2";
 }
 function selectPiece(b){
   selPiece=b;
@@ -1032,7 +1097,81 @@ function selectPiece(b){
     " &times; "+fmtLen(h)+" high<br><span class=\"cap\">plan size is measured; "+
     "height is the model's, not from the drawing</span>";
 }
-document.getElementById("units").onchange=e=>{units=e.target.value; selectPiece(selPiece);};
+document.getElementById("units").onchange=e=>{
+  units=e.target.value; selectPiece(selPiece); roomList();};
+
+/* ---- room schedule ------------------------------------------------------ */
+function roomList(){
+  const el=document.getElementById("rooms"); if(!el) return;
+  let h="";
+  ["gf","ff"].forEach(k=>{
+    const P=PLAN[k]; if(!P) return;
+    h+="<div class=\"rm hd\">"+(k==="gf"?"Ground floor":"First floor")+
+       " &mdash; "+fmtLen(P.w)+" &times; "+fmtLen(P.d)+"</div>";
+    (P.rooms||[]).slice().sort((a,b)=>b[4]-a[4]).forEach(q=>{
+      h+="<div class=\"rm\"><span>"+fmtLen(q[2]-q[0])+" &times; "+fmtLen(q[3]-q[1])+
+         "</span><span>"+fmtArea(q[4])+"</span></div>";
+    });
+  });
+  el.innerHTML=h;
+}
+
+/* ---- move, rotate and resize furniture ---------------------------------- */
+let editMode=false, dragPiece=null, dragFrom=null;
+const GPLANE=new THREE.Plane(new THREE.Vector3(0,1,0),0);
+const pieceMeshes=b=>furnMeshes.filter(m=>m.userData.piece===b);
+const floorOf=b=>((PLAN.gf&&PLAN.gf.furn3d||[]).indexOf(b)>=0)?"gf":"ff";
+function editUI(){
+  const on=editMode&&!!selPiece;
+  document.getElementById("fdims").hidden=!on;
+  document.getElementById("fbtns").hidden=!editMode;
+  if(on&&selPiece){
+    document.getElementById("fw").value=Math.round(selPiece[2]-selPiece[0]);
+    document.getElementById("fd").value=Math.round(selPiece[3]-selPiece[1]);
+  }
+}
+/* rewrite a piece's footprint about its own centre, rects included */
+function setFootprint(b,w,d){
+  const cx=(b[0]+b[2])/2, cz=(b[1]+b[3])/2;
+  const sx=w/(b[2]-b[0]), sz=d/(b[3]-b[1]);
+  b[4]=b[4].map(r=>[cx+(r[0]-cx)*sx, cz+(r[1]-cz)*sz,
+                    cx+(r[2]-cx)*sx, cz+(r[3]-cz)*sz]);
+  b[0]=cx-w/2; b[2]=cx+w/2; b[1]=cz-d/2; b[3]=cz+d/2;
+}
+function nudge(b,dx,dz){
+  b[0]+=dx; b[2]+=dx; b[1]+=dz; b[3]+=dz;
+  b[4]=b[4].map(r=>[r[0]+dx,r[1]+dz,r[2]+dx,r[3]+dz]);
+}
+function keepOriginal(b){ if(!b.orig) b.orig=[b[0],b[1],b[2],b[3],
+  b[4].map(r=>r.slice()), b[6]||null]; }
+document.getElementById("fedit").onclick=e=>{
+  editMode=!editMode;
+  e.target.textContent="Move furniture: "+(editMode?"on":"off");
+  e.target.setAttribute("aria-pressed",editMode);
+  document.getElementById("hint").textContent=editMode
+    ? "Drag a piece to move it · use the size boxes or Rotate"
+    : "Drag to orbit · scroll to zoom · click a wall to paint it";
+  editUI();};
+["fw","fd"].forEach(id=>document.getElementById(id).onchange=()=>{
+  if(!selPiece) return; keepOriginal(selPiece);
+  const w=+document.getElementById("fw").value||selPiece[2]-selPiece[0];
+  const d=+document.getElementById("fd").value||selPiece[3]-selPiece[1];
+  setFootprint(selPiece,Math.max(100,w),Math.max(100,d));
+  build(); selectPiece(selPiece); frame();});
+document.getElementById("frot").onclick=()=>{
+  if(!selPiece) return; keepOriginal(selPiece);
+  const b=selPiece;
+  setFootprint(b,b[3]-b[1],b[2]-b[0]);            /* swap width and depth */
+  const F={"z+":"x-","x-":"z-","z-":"x+","x+":"z+"};
+  b[6]=F[b[6]]||(b[2]-b[0]>=b[3]-b[1]?"z+":"x+"); /* turn the open face too */
+  build(); selectPiece(b); editUI(); frame();};
+document.getElementById("frst").onclick=()=>{
+  ["gf","ff"].forEach(k=>(PLAN[k]&&PLAN[k].furn3d||[]).forEach(b=>{
+    if(!b.orig) return;
+    b[0]=b.orig[0]; b[1]=b.orig[1]; b[2]=b.orig[2]; b[3]=b.orig[3];
+    b[4]=b.orig[4].map(r=>r.slice()); b[6]=b.orig[5]; delete b.orig;}));
+  build(); selectPiece(null); editUI(); frame();};
+
 
 const ray=new THREE.Raycaster(), mouse=new THREE.Vector2();
 renderer.domElement.addEventListener("click",e=>{
@@ -1174,7 +1313,7 @@ const step=(fx,fz)=>{const s=.42;
 
 addEventListener("resize",resize);
 addEventListener("orientationchange",()=>setTimeout(resize,220));
-build(); sunState(13); resize();
+build(); roomList(); sunState(13); resize();
 </script>
 </body>
 </html>
