@@ -1343,7 +1343,10 @@ color:var(--dim);cursor:pointer;letter-spacing:.03em}
 .seg button[aria-pressed=true]{background:var(--ink3);color:var(--bone)}
 main{flex:1;display:flex;min-height:0}
 #stage{flex:1;position:relative;min-width:0;background:#0e0f11}
-#stage canvas{display:block;width:100%;height:100%;touch-action:none;cursor:crosshair}
+/* touch-action none keeps the browser off our gestures; the callout rules stop
+   a long press raising the text-selection loupe instead of grabbing a piece */
+#stage canvas{display:block;width:100%;height:100%;touch-action:none;cursor:crosshair;
+user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .overlay{position:absolute;background:rgba(14,15,17,.74);border:1px solid var(--line);
 border-radius:2px;backdrop-filter:blur(6px)}
 .tl{left:16px;top:16px;padding:2px}
@@ -1360,6 +1363,9 @@ aside{flex:none;width:300px;border-left:1px solid var(--line);overflow-y:auto;pa
 .grp>h2{font-size:10px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;
 color:var(--faint);margin:0 0 11px;padding-bottom:7px;border-bottom:1px solid var(--line)}
 .row{display:flex;align-items:center;gap:9px;margin-bottom:8px}
+/* .row's display beat the browser's [hidden] rule, so the size boxes showed
+   whether or not anything was selected */
+[hidden]{display:none!important}
 .row label{flex:none;width:74px;font-size:12px;color:var(--dim)}
 select,input[type=number]{flex:1;min-width:0;background:var(--ink2);border:1px solid var(--line);
 border-radius:2px;padding:6px 8px;font-size:12px}
@@ -1385,6 +1391,35 @@ padding:9px;font-size:12px;cursor:pointer}
 .spec:hover{background:var(--ink3)}
 #sheetBtn{display:none}
 #pad{display:none}
+
+/* Floating measurement card. It sits over the canvas next to whatever is
+   selected, because on a phone the panel is a closed sheet exactly when the
+   number matters. pointer-events none on the card itself so it can never
+   swallow an orbit that happens to start on top of it; only the buttons take
+   presses. */
+#fbox{position:absolute;z-index:8;display:none;min-width:176px;max-width:62vw;
+  background:rgba(14,15,17,.93);border:1px solid var(--line2);border-radius:4px;
+  padding:9px 11px 9px;backdrop-filter:blur(6px);
+  box-shadow:0 7px 24px rgba(0,0,0,.5);pointer-events:none}
+#fbox.on{display:block}
+#fbox button{pointer-events:auto}
+#fbox.grab{border-color:var(--live);box-shadow:0 0 0 1px var(--live),0 7px 24px rgba(0,0,0,.55)}
+#fbox .fbh{display:flex;align-items:flex-start;gap:8px;margin-bottom:4px}
+#fbox .fbn{flex:1;font-size:10px;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--dim);line-height:1.5}
+#fbox.grab .fbn{color:var(--live)}
+#fbox .fbx{flex:none;background:none;border:0;color:var(--faint);font-size:17px;
+  line-height:1;padding:1px 3px;cursor:pointer}
+#fbox .fbm{font-family:var(--mono);font-size:16px;color:var(--bone);letter-spacing:.01em}
+#fbox .fbs{font-family:var(--mono);font-size:12px;color:var(--dim);margin-top:2px}
+#fbox .fbc{font-size:10px;color:var(--faint);margin-top:6px;line-height:1.4}
+#fbox .fba{display:flex;gap:5px;margin-top:8px}
+#fbox .fba button{flex:1;min-height:30px;background:var(--ink2);border:1px solid var(--line);
+  border-radius:3px;color:var(--bone);font-size:13px;padding:5px 0;cursor:pointer}
+#fbox .fba button:hover{background:var(--ink3)}
+#fbox .fba button.wide{flex:1.5}
+@keyframes fbpulse{0%{transform:scale(1)}42%{transform:scale(1.07)}100%{transform:scale(1)}}
+#fbox.pulse{animation:fbpulse .3s ease}
 
 /* Phones and small tablets. The panel becomes a bottom sheet so the model gets
    the whole screen, and everything you tap grows to a finger-sized target. */
@@ -1417,6 +1452,14 @@ padding:9px;font-size:12px;cursor:pointer}
   .overlay.bl{display:none}
   .overlay.tr{max-width:44vw}
   .spec{padding:14px}
+  /* bigger everything on the card: it gets read at arm's length on site */
+  #fbox{min-width:196px;padding:11px 13px 11px}
+  #fbox .fbn{font-size:11px}
+  #fbox .fbm{font-size:19px}
+  #fbox .fbs{font-size:13px}
+  #fbox .fbc{font-size:11px}
+  #fbox .fbx{font-size:21px;padding:2px 6px}
+  #fbox .fba button{min-height:42px;font-size:15px}
   /* thumb pad for walking, since there is no keyboard on a phone */
   #pad{position:absolute;left:12px;bottom:12px;z-index:7;
     grid-template-columns:repeat(3,46px);grid-template-rows:repeat(2,46px);gap:5px}
@@ -1451,7 +1494,17 @@ padding:9px;font-size:12px;cursor:pointer}
 <button id="vWalk" aria-pressed="false">Walk</button></div>
 <div class="overlay tr"><div class="lbl">Selected</div><div class="chip" id="chip"></div>
 <div class="cap" id="cap">click a wall</div></div>
-<div class="overlay bl" id="hint">Drag to orbit · scroll to zoom · click a wall to paint it</div>
+<div class="overlay bl" id="hint">Drag to orbit · scroll to zoom · click a wall to paint · hold a piece to move it</div>
+<div id="fbox" role="status" aria-live="polite">
+<div class="fbh"><span class="fbn" id="fbn"></span>
+<button class="fbx" id="fbx" aria-label="Close measurement">&times;</button></div>
+<div class="fbm" id="fbm"></div><div class="fbs" id="fbs"></div>
+<div class="fbc" id="fbc"></div>
+<div class="fba"><button id="fbMinus" aria-label="Smaller">&minus;</button>
+<button id="fbPlus" aria-label="Bigger">+</button>
+<button id="fbRot" aria-label="Rotate 90 degrees">90&deg;</button>
+<button id="fbRst" class="wide" aria-label="Reset this piece">Reset</button></div>
+</div>
 <div id="pad" role="group" aria-label="Move">
 <button class="sp"></button><button id="mF" aria-label="Forward">&#9650;</button><button class="sp"></button>
 <button id="mL" aria-label="Left">&#9664;</button><button id="mB" aria-label="Back">&#9660;</button>
@@ -2276,6 +2329,7 @@ function frame(){
     camera.rotation.set(pitch,yaw,0);
   }
   camera.updateProjectionMatrix(); renderer.render(scene,camera);
+  fboxUpdate();      /* the card is pinned to the piece, so it moves with it */
 }
 function resize(){const w=stage.clientWidth,h=stage.clientHeight;
   renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix(); frame();}
@@ -2286,7 +2340,12 @@ let drag=null, moved=0;
 const pts=new Map();
 const spread=()=>{const [a,b]=[...pts.values()];
   return {d:Math.hypot(a.x-b.x,a.y-b.y),x:(a.x+b.x)/2,y:(a.y+b.y)/2};};
-let pinch=null;
+let pinch=null, pinchMode="cam", pinch0=0, sizeBase=null, previewWD=null;
+/* Hold this long, having wandered less than this, and the piece is yours. The
+   slop is what keeps the hold from stealing an orbit: a finger that sets off
+   straight away meant to turn the model, so the timer is dropped. */
+const LONG_MS=400, LONG_SLOP=12;
+let pressT=null, pressStart=null, pressPiece=null;
 const zoomBy=v=>{
   if(mode==="orbit") radius=Math.max(20,Math.min(360,radius+v));
   else{const s=v*.03; wx+=Math.sin(yaw)*s; wz+=Math.cos(yaw)*s;}
@@ -2298,28 +2357,62 @@ const groundAt=e=>{                 /* where a pointer meets the floor plane */
   const p=new THREE.Vector3();
   return ray.ray.intersectPlane(GPLANE,p)?p:null;
 };
+/* topmost visible piece under a pointer, or null */
+const furnAt=e=>{
+  const r=renderer.domElement.getBoundingClientRect();
+  mouse.x=((e.clientX-r.left)/r.width)*2-1; mouse.y=-((e.clientY-r.top)/r.height)*2+1;
+  ray.setFromCamera(mouse,camera);
+  const f=ray.intersectObjects(furnMeshes.filter(m=>m.parent.visible),false)[0];
+  return f?f.object.userData.piece:null;
+};
+function cancelPress(){if(pressT){clearTimeout(pressT);pressT=null;}
+  pressPiece=null; pressStart=null;}
+/* Grabbing has to announce itself or the hold feels like nothing happened:
+   buzz where the phone allows it, turn the outline live green, pulse the card. */
+function grabPiece(b,at){
+  dragPiece=b; dragFrom=groundAt(at); keepOriginal(b);
+  selectPiece(b); editUI(); drag=null; moved=99;
+  if(navigator.vibrate){try{navigator.vibrate(30);}catch(err){}}
+  const fb=document.getElementById("fbox");
+  fb.classList.remove("pulse"); void fb.offsetWidth; fb.classList.add("pulse");
+  frame();
+}
 renderer.domElement.addEventListener("pointerdown",e=>{
+  /* a first finger means no gesture is in flight, so anything still in the map
+     is a pointer whose release went missing. Left there it reads as a second
+     finger for ever, and every tap after it is swallowed as a pinch. */
+  if(e.isPrimary) pts.clear();
   pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
-  if(pts.size===2){pinch=spread(); drag=null; dragPiece=null;}
-  else{
+  if(pts.size===2){
+    cancelPress();
+    if(dragPiece) commitDrag();   /* hold, move, then pinch: bank the move first */
+    pinch=spread(); pinch0=pinch.d; drag=null;
+    startPinch();
+  }
+  else if(pts.size===1){
     drag={x:e.clientX,y:e.clientY}; moved=0;
-    if(editMode){
-      const r=renderer.domElement.getBoundingClientRect();
-      mouse.x=((e.clientX-r.left)/r.width)*2-1; mouse.y=-((e.clientY-r.top)/r.height)*2+1;
-      ray.setFromCamera(mouse,camera);
-      const f=ray.intersectObjects(furnMeshes.filter(m=>m.parent.visible),false)[0];
-      if(f){                        /* grab the piece, and stop it orbiting */
-        dragPiece=f.object.userData.piece; dragFrom=groundAt(e);
-        keepOriginal(dragPiece); selectPiece(dragPiece); editUI(); drag=null;
-      }
+    const b=furnAt(e);
+    if(b&&editMode) grabPiece(b,e);          /* the desktop toggle grabs at once */
+    else if(b&&e.pointerType!=="mouse"){
+      /* a finger has no modifier key to hold, so the hold itself is the grab.
+         Mouse is left alone so press-pause-drag still orbits on desktop. */
+      pressPiece=b; pressStart={x:e.clientX,y:e.clientY};
+      pressT=setTimeout(()=>{const p=pressPiece,s=pressStart; pressT=null; cancelPress();
+        if(p) grabPiece(p,{clientX:s.x,clientY:s.y});},LONG_MS);
     }
   }
   renderer.domElement.setPointerCapture(e.pointerId);});
 renderer.domElement.addEventListener("pointermove",e=>{
   if(!pts.has(e.pointerId))return;
   pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pressT&&pressStart&&
+     Math.abs(e.clientX-pressStart.x)+Math.abs(e.clientY-pressStart.y)>LONG_SLOP)
+    cancelPress();
   if(pts.size>=2&&pinch){
     const s=spread();
+    if(pinchMode==="size"&&sizeBase){
+      previewScale(s.d/(pinch0||1)); moved=99; frame(); return;
+    }
     zoomBy((pinch.d-s.d)*0.55);
     /* the midpoint sliding is a two-finger pan */
     const mx=s.x-pinch.x, my=s.y-pinch.y;
@@ -2335,36 +2428,43 @@ renderer.domElement.addEventListener("pointermove",e=>{
     const p=groundAt(e); if(!p||!dragFrom) return;
     const dxw=p.x-dragFrom.x, dzw=p.z-dragFrom.z;
     pieceMeshes(dragPiece).forEach(m=>{m.position.x+=dxw; m.position.z+=dzw;});
-    dragFrom=p; moved=99; frame(); return;
+    dragFrom=p; moved=99; refreshHelper(); frame(); return;
   }
   if(!drag)return; const dx=e.clientX-drag.x, dy=e.clientY-drag.y;
   moved+=Math.abs(dx)+Math.abs(dy); drag={x:e.clientX,y:e.clientY};
   if(mode==="orbit"){theta-=dx*.006; phi=Math.max(.12,Math.min(1.52,phi-dy*.005));}
   else{yaw-=dx*.004; pitch=Math.max(-.9,Math.min(.8,pitch-dy*.004));}
   frame();});
+/* meshes were slid live; write the move into the plan and rebuild so every
+   derived part (LED strips, door leaves) follows. Snap to 10 mm, since nobody
+   quotes furniture to the millimetre. */
+function commitDrag(){
+  const b=dragPiece; if(!b) return;
+  const m=pieceMeshes(b)[0];
+  if(m){
+    const P=PLAN[floorOf(b)], off=OFF[floorOf(b)]||0;
+    const bb=new THREE.Box3(); pieceMeshes(b).forEach(o=>bb.expandByObject(o));
+    const cx=((bb.min.x+bb.max.x)/2/SCALE-off)*1000+P.w/2;
+    const cz=((bb.min.z+bb.max.z)/2)/SCALE*1000+P.d/2;
+    const dx=Math.round((cx-(b[0]+b[2])/2)/10)*10;
+    const dz=Math.round((cz-(b[1]+b[3])/2)/10)*10;
+    if(dx||dz) nudge(b,dx,dz);
+  }
+  dragPiece=null; dragFrom=null; build(); selectPiece(b); editUI(); frame();
+}
 ["pointerup","pointercancel","pointerleave"].forEach(t=>
   renderer.domElement.addEventListener(t,e=>{
     pts.delete(e.pointerId);
-    if(pts.size<2) pinch=null;
+    if(pts.size<2){
+      if(pinchMode==="size") commitScale();
+      pinch=null; pinchMode="cam";
+    }
     if(pts.size===0){
-      drag=null;
-      if(dragPiece){
-        /* meshes were slid live; write the move into the plan and rebuild so
-           every derived part (LED strips, door leaves) follows. Snap to 10 mm,
-           since nobody quotes furniture to the millimetre. */
-        const b=dragPiece, m=pieceMeshes(b)[0];
-        if(m){
-          const P=PLAN[floorOf(b)], off=OFF[floorOf(b)]||0;
-          const bb=new THREE.Box3(); pieceMeshes(b).forEach(o=>bb.expandByObject(o));
-          const cx=((bb.min.x+bb.max.x)/2/SCALE-off)*1000+P.w/2;
-          const cz=((bb.min.z+bb.max.z)/2)/SCALE*1000+P.d/2;
-          const dx=Math.round((cx-(b[0]+b[2])/2)/10)*10;
-          const dz=Math.round((cz-(b[1]+b[3])/2)/10)*10;
-          if(dx||dz) nudge(b,dx,dz);
-        }
-        dragPiece=null; dragFrom=null; build(); selectPiece(b); editUI(); frame();
-      }
+      drag=null; cancelPress();
+      if(dragPiece) commitDrag();
     }}));
+/* a long press on a phone otherwise raises the selection callout mid-grab */
+renderer.domElement.addEventListener("contextmenu",e=>e.preventDefault());
 renderer.domElement.addEventListener("wheel",e=>{e.preventDefault();
   if(mode==="orbit") radius=Math.max(20,Math.min(360,radius+e.deltaY*.12));
   else{const s=e.deltaY*.004; wx-=Math.sin(yaw)*s*-1; wz-=Math.cos(yaw)*s*-1;}
@@ -2401,11 +2501,13 @@ function selectPiece(b){
   selPiece=b;
   if(selHelper){scene.remove(selHelper); selHelper=null;}
   const el=document.getElementById("fsel");
-  if(!b){el.textContent="Tap any furniture to measure it."; return;}
+  if(!b){el.textContent="Tap any furniture to measure it."; fboxUpdate(); return;}
   const bb=new THREE.Box3();
   furnMeshes.forEach(m=>{if(m.userData.piece===b) bb.expandByObject(m);});
   if(!bb.isEmpty()){
-    selHelper=new THREE.Box3Helper(bb,new THREE.Color("#ffcf8f"));
+    /* live green while it is held, so the grab is unmistakable at a glance */
+    selHelper=new THREE.Box3Helper(bb,
+      new THREE.Color(dragPiece===b?"#8fb8a8":"#ffcf8f"));
     scene.add(selHelper);
   }
   const w=b[2]-b[0], d=b[3]-b[1], h=(b.h||0)*1000;
@@ -2413,6 +2515,64 @@ function selectPiece(b){
     fmtLen(Math.max(w,d))+" &times; "+fmtLen(Math.min(w,d))+
     " &times; "+fmtLen(h)+" high<br><span class=\"cap\">plan size is measured; "+
     "height is the model's, not from the drawing</span>";
+  fboxUpdate();
+}
+/* the outline is built once per selection, so it has to be re-fitted while the
+   meshes are being slid or stretched */
+function refreshHelper(){
+  if(!selHelper||!selPiece) return;
+  const bb=new THREE.Box3();
+  pieceMeshes(selPiece).forEach(o=>bb.expandByObject(o));
+  if(!bb.isEmpty()) selHelper.box.copy(bb);
+}
+/* screen-space box of a piece, in client coordinates. Null when the piece is
+   hidden or any corner sits behind the eye, where a projection is meaningless
+   and would fling the card across the screen. */
+function screenRect(b){
+  const ms=b?pieceMeshes(b):[];
+  if(!ms.length||!ms[0].parent||!ms[0].parent.visible) return null;
+  const bb=new THREE.Box3(); ms.forEach(o=>bb.expandByObject(o));
+  if(bb.isEmpty()) return null;
+  const r=renderer.domElement.getBoundingClientRect(), v=new THREE.Vector3();
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  for(let i=0;i<8;i++){
+    v.set((i&1)?bb.max.x:bb.min.x,(i&2)?bb.max.y:bb.min.y,(i&4)?bb.max.z:bb.min.z);
+    v.project(camera);
+    if(v.z>1) return null;
+    const sx=r.left+(v.x+1)*0.5*r.width, sy=r.top+(1-v.y)*0.5*r.height;
+    if(sx<x0)x0=sx; if(sx>x1)x1=sx; if(sy<y0)y0=sy; if(sy>y1)y1=sy;
+  }
+  return {x0:x0,y0:y0,x1:x1,y1:y1};
+}
+const COARSE=matchMedia&&matchMedia("(pointer:coarse)").matches;
+function fboxUpdate(){
+  const fb=document.getElementById("fbox"); if(!fb) return;
+  const b=selPiece;
+  if(!b){fb.classList.remove("on","grab"); return;}
+  const held=dragPiece===b||(sizeBase&&sizeBase.b===b);
+  const w=previewWD?previewWD[0]:b[2]-b[0],
+        d=previewWD?previewWD[1]:b[3]-b[1], h=(b.h||0)*1000;
+  document.getElementById("fbn").textContent=
+    (dragPiece===b?"Moving · ":sizeBase&&sizeBase.b===b?"Resizing · ":"")+
+    (TIER_NAME[b[5]]||b[5]||"Piece");
+  document.getElementById("fbm").textContent=
+    fmtLen(Math.max(w,d))+" × "+fmtLen(Math.min(w,d));
+  document.getElementById("fbs").textContent=fmtLen(h)+" high";
+  document.getElementById("fbc").textContent=COARSE
+    ? "hold to move · pinch on it to resize"
+    : "height is the model's, not the drawing's";
+  fb.classList.add("on"); fb.classList.toggle("grab",!!held);
+  const r=screenRect(b);
+  if(!r){fb.style.visibility="hidden"; return;}
+  fb.style.visibility="";
+  /* sit above the piece so the thing being measured stays visible, drop below
+     only when there is no room, and never let it leave the stage */
+  const st=stage.getBoundingClientRect(), bw=fb.offsetWidth, bh=fb.offsetHeight, gap=12;
+  let x=(r.x0+r.x1)/2-st.left-bw/2, y=r.y0-st.top-bh-gap;
+  if(y<8) y=r.y1-st.top+gap;
+  const keep=(innerWidth<=840)?72:8;      /* clear of the sheet and pad buttons */
+  fb.style.left=Math.max(8,Math.min(st.width-bw-8,x))+"px";
+  fb.style.top=Math.max(8,Math.min(Math.max(8,st.height-bh-keep),y))+"px";
 }
 document.getElementById("units").onchange=e=>{
   units=e.target.value; selectPiece(selPiece); roomList();};
@@ -2461,13 +2621,76 @@ function nudge(b,dx,dz){
 }
 function keepOriginal(b){ if(!b.orig) b.orig=[b[0],b[1],b[2],b[3],
   b[4].map(r=>r.slice()), b[6]||null]; }
+
+/* ---- pinch: resize the selected piece, or zoom the camera ---------------
+   The rule, kept deliberately simple so it can be explained on site: a pinch
+   resizes only when a piece is already selected AND the midpoint between the
+   two fingers lands on that piece's outline, allowing 48 px of slack for fat
+   fingers. Every other pinch is still the camera, so zoom is never stolen by
+   a selection left behind three rooms away. The job is decided once, when the
+   second finger touches down, and holds for the rest of the gesture. */
+const snap10=v=>Math.max(100,Math.round(v/10)*10);
+function startPinch(){
+  pinchMode="cam"; sizeBase=null; previewWD=null;
+  if(!selPiece) return;
+  const r=screenRect(selPiece); if(!r) return;
+  const pad=48;
+  if(pinch.x<r.x0-pad||pinch.x>r.x1+pad||pinch.y<r.y0-pad||pinch.y>r.y1+pad) return;
+  const b=selPiece, ms=pieceMeshes(b); if(!ms.length) return;
+  const bb=new THREE.Box3(); ms.forEach(o=>bb.expandByObject(o));
+  keepOriginal(b);
+  pinchMode="size";
+  sizeBase={b:b,k:1,w0:b[2]-b[0],d0:b[3]-b[1],
+    cx:(bb.min.x+bb.max.x)/2, cz:(bb.min.z+bb.max.z)/2,
+    ms:ms.map(o=>({o:o,x:o.position.x,z:o.position.z,sx:o.scale.x,sz:o.scale.z}))};
+  if(navigator.vibrate){try{navigator.vibrate(18);}catch(err){}}
+}
+/* Preview only: push the meshes out from the piece centre and stretch them in
+   plan. Rebuilding the house on every move would stutter on a phone, so the
+   real footprint is written once on release, exactly like the drag does. A few
+   angled parts (a chair back, a stair rail) shear slightly during the preview
+   and come back true after the rebuild. */
+function previewScale(s){
+  const B=sizeBase; if(!B) return;
+  s=Math.max(100/Math.min(B.w0,B.d0),Math.min(4,s));
+  B.k=s;
+  B.ms.forEach(m=>{m.o.position.x=B.cx+(m.x-B.cx)*s; m.o.position.z=B.cz+(m.z-B.cz)*s;
+    m.o.scale.x=m.sx*s; m.o.scale.z=m.sz*s;});
+  previewWD=[snap10(B.w0*s),snap10(B.d0*s)];
+  refreshHelper();
+}
+function commitScale(){
+  const B=sizeBase; sizeBase=null; previewWD=null; pinchMode="cam";
+  if(!B) return;
+  setFootprint(B.b,snap10(B.w0*B.k),snap10(B.d0*B.k));
+  build(); selectPiece(B.b); editUI(); frame();
+}
+/* the same move by button, for a desktop with no pinch to give */
+function scalePiece(k){
+  const b=selPiece; if(!b) return; keepOriginal(b);
+  setFootprint(b,snap10((b[2]-b[0])*k),snap10((b[3]-b[1])*k));
+  build(); selectPiece(b); editUI(); frame();
+}
+function rotatePiece(b){
+  if(!b) return; keepOriginal(b);
+  setFootprint(b,b[3]-b[1],b[2]-b[0]);            /* swap width and depth */
+  const F={"z+":"x-","x-":"z-","z-":"x+","x+":"z+"};
+  b[6]=F[b[6]]||(b[2]-b[0]>=b[3]-b[1]?"z+":"x+"); /* turn the open face too */
+  build(); selectPiece(b); editUI(); frame();
+}
+function resetPiece(b){
+  if(!b||!b.orig) return;
+  b[0]=b.orig[0]; b[1]=b.orig[1]; b[2]=b.orig[2]; b[3]=b.orig[3];
+  b[4]=b.orig[4].map(r=>r.slice()); b[6]=b.orig[5]; delete b.orig;
+  build(); selectPiece(b); editUI(); frame();
+}
 document.getElementById("fedit").onclick=e=>{
   editMode=!editMode;
   e.target.textContent="Move furniture: "+(editMode?"on":"off");
   e.target.setAttribute("aria-pressed",editMode);
   document.getElementById("hint").textContent=editMode
     ? "Drag a piece to move it · use the size boxes or Rotate"
-    : "Drag to orbit · scroll to zoom · click a wall to paint it";
+    : "Drag to orbit · scroll to zoom · click a wall to paint · hold a piece to move it";
   editUI();};
 ["fw","fd"].forEach(id=>document.getElementById(id).onchange=()=>{
   if(!selPiece) return; keepOriginal(selPiece);
@@ -2475,13 +2698,13 @@ document.getElementById("fedit").onclick=e=>{
   const d=+document.getElementById("fd").value||selPiece[3]-selPiece[1];
   setFootprint(selPiece,Math.max(100,w),Math.max(100,d));
   build(); selectPiece(selPiece); frame();});
-document.getElementById("frot").onclick=()=>{
-  if(!selPiece) return; keepOriginal(selPiece);
-  const b=selPiece;
-  setFootprint(b,b[3]-b[1],b[2]-b[0]);            /* swap width and depth */
-  const F={"z+":"x-","x-":"z-","z-":"x+","x+":"z+"};
-  b[6]=F[b[6]]||(b[2]-b[0]>=b[3]-b[1]?"z+":"x+"); /* turn the open face too */
-  build(); selectPiece(b); editUI(); frame();};
+document.getElementById("frot").onclick=()=>rotatePiece(selPiece);
+/* the card carries the same actions, so a phone never has to open the sheet */
+document.getElementById("fbRot").onclick=()=>rotatePiece(selPiece);
+document.getElementById("fbRst").onclick=()=>resetPiece(selPiece);
+document.getElementById("fbMinus").onclick=()=>scalePiece(0.94);
+document.getElementById("fbPlus").onclick=()=>scalePiece(1.06);
+document.getElementById("fbx").onclick=()=>{selectPiece(null); frame();};
 document.getElementById("frst").onclick=()=>{
   ["gf","ff"].forEach(k=>(PLAN[k]&&PLAN[k].furn3d||[]).forEach(b=>{
     if(!b.orig) return;
@@ -2510,8 +2733,20 @@ renderer.domElement.addEventListener("click",e=>{
   const paint=m=>{m.material.color.set(P[2]); m.userData.code=P[0];};
   const f=hit.object.userData.floor;
 
-  if(scope==="all"){ wallMeshes.forEach(paint); }
-  else if(scope==="floor"){ wallMeshes.forEach(m=>{if(m.userData.floor===f)paint(m);}); }
+  /* Only ever paint what you can see from inside. The outermost lines of each
+     plan are the OUTSIDE faces of the external walls, and they are rendered
+     the same as any other, so a whole-house sweep used to paint the facade. */
+  const inside=m=>{
+    const s=m.userData.seg, P=PLAN[m.userData.floor];
+    if(!s||!P) return true;
+    const e=60;
+    if(Math.abs(s[0]-s[2])<1)   return s[0]>e && s[0]<P.w-e;
+    if(Math.abs(s[1]-s[3])<1)   return s[1]>e && s[1]<P.d-e;
+    return true;
+  };
+  if(scope==="all"){ wallMeshes.forEach(m=>{if(inside(m))paint(m);}); }
+  else if(scope==="floor"){
+    wallMeshes.forEach(m=>{if(m.userData.floor===f&&inside(m))paint(m);}); }
   else if(scope==="room"){
     /* find the room from where the click landed on the floor plan, taking the
        SMALLEST box that contains it: the boxes nest, and the ground floor open
@@ -2572,7 +2807,7 @@ function setMode(m){mode=m;
   document.getElementById("vOrb").setAttribute("aria-pressed",m==="orbit");
   document.getElementById("vWalk").setAttribute("aria-pressed",m==="walk");
   document.getElementById("hint").textContent = m==="orbit"
-    ? "Drag to orbit · scroll to zoom · click a wall to paint it"
+    ? "Drag to orbit · scroll to zoom · click a wall to paint · hold a piece to move it"
     : "Drag to look · WASD or arrows to move · click a wall to paint it";
   padVis(); frame();}
 document.getElementById("sun").oninput=e=>{hour=+e.target.value;sunState(hour);frame();};
